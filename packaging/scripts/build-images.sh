@@ -15,6 +15,8 @@ set -euo pipefail
 
 REGISTRY="${REGISTRY:-ghcr.io/chrissnell}"
 TAG="${TAG:-$(git rev-parse --short HEAD)}"
+# K8s nodes are amd64; default to that even when building on Apple Silicon.
+PLATFORM="${PLATFORM:-linux/amd64}"
 PUSH=1
 
 while [[ $# -gt 0 ]]; do
@@ -22,6 +24,7 @@ while [[ $# -gt 0 ]]; do
     --no-push) PUSH=0; shift ;;
     --registry) REGISTRY="$2"; shift 2 ;;
     --tag) TAG="$2"; shift 2 ;;
+    --platform) PLATFORM="$2"; shift 2 ;;
     -h|--help)
       grep '^#' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -48,6 +51,7 @@ fi
 
 echo "==> Registry: $REGISTRY"
 echo "==> Tag:      $TAG"
+echo "==> Platform: $PLATFORM"
 echo "==> Images:   ${SELECTED[*]}"
 echo "==> Push:     $PUSH"
 echo
@@ -60,7 +64,7 @@ for name in "${SELECTED[@]}"; do
   fi
   full="$REGISTRY/multica-$name:$TAG"
   echo "==> Building $full from $dockerfile"
-  docker build -f "$dockerfile" -t "$full" .
+  docker build --platform "$PLATFORM" -f "$dockerfile" -t "$full" .
   if [[ "$PUSH" -eq 1 ]]; then
     echo "==> Pushing $full"
     docker push "$full"
