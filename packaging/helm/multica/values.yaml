@@ -12,6 +12,12 @@ ingress:
   tls:
     enabled: true
     secretName: multica-tls
+  # Optional LAN-only .local hostname for development before the public
+  # ingress (Cloudflare tunnel etc.) is wired. external-mdns publishes the
+  # hostname automatically; HTTP only (no Let's Encrypt for .local).
+  local:
+    enabled: false
+    hostname: multica.local
 
 # ── Images ─────────────────────────────────────────────────
 image:
