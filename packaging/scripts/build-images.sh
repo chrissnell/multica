@@ -9,7 +9,8 @@
 #   ./build-images.sh [--no-push] [--registry REG] [--tag TAG] [image…]
 #
 # Defaults: registry=ghcr.io/chrissnell, tag=$(git rev-parse --short HEAD).
-# With no image args, builds all known images.
+# With no image args, builds backend/web/postgres. Pass `runtime` explicitly
+# to build the runtime base + runtime-claude images (Plan C).
 
 set -euo pipefail
 
@@ -42,6 +43,31 @@ declare -A IMAGES=(
   [postgres]="packaging/docker/postgres/Dockerfile"
 )
 
+build_runtime() {
+  local tag="$1" registry="$2" push="$3" platform="$4"
+  local base="$registry/multica-runtime-base:$tag"
+  local claude="$registry/multica-runtime-claude:$tag"
+
+  echo "==> Building $base"
+  docker build --platform "$platform" \
+    -f packaging/docker/runtime/Dockerfile.base \
+    -t "$base" .
+  if [[ "$push" -eq 1 ]]; then
+    echo "==> Pushing $base"
+    docker push "$base"
+  fi
+
+  echo "==> Building $claude (FROM $base)"
+  docker build --platform "$platform" \
+    --build-arg BASE_IMAGE="$base" \
+    -f packaging/docker/runtime/Dockerfile.claude \
+    -t "$claude" .
+  if [[ "$push" -eq 1 ]]; then
+    echo "==> Pushing $claude"
+    docker push "$claude"
+  fi
+}
+
 # If positional args given, restrict to those; else build all.
 if [[ $# -gt 0 ]]; then
   SELECTED=("$@")
@@ -57,6 +83,10 @@ echo "==> Push:     $PUSH"
 echo
 
 for name in "${SELECTED[@]}"; do
+  if [[ "$name" == "runtime" ]]; then
+    build_runtime "$TAG" "$REGISTRY" "$PUSH" "$PLATFORM"
+    continue
+  fi
   dockerfile="${IMAGES[$name]:-}"
   if [[ -z "$dockerfile" ]]; then
     echo "unknown image: $name" >&2
