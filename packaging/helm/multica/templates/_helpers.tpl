@@ -52,3 +52,13 @@ postgres://{{ .Values.platform.postgres.user }}:$(POSTGRES_PASSWORD)@multica-pos
 {{ required "platform.postgres.externalUrl is required when platform.postgres.enabled=false" .Values.platform.postgres.externalUrl }}
 {{- end -}}
 {{- end }}
+
+{{/*
+Resolve the runtime (agent) image reference.
+  {{ include "multica.runtimeImage" . }}
+*/}}
+{{- define "multica.runtimeImage" -}}
+{{- $img := .Values.runtime.daemon.image -}}
+{{- $tag := default .Values.image.tag $img.tag -}}
+{{- printf "%s/%s:%s" .Values.image.registry $img.name $tag -}}
+{{- end }}

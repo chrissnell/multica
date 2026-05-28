@@ -73,9 +73,38 @@ platform:
       limits:   { cpu: 2,    memory: 2Gi }
     # externalUrl: postgres://user:pass@host:5432/db?sslmode=require
 
-# ── Execution subsystem (Plan D fills this) ────────────────
+# ── Execution subsystem ────────────────────────────────────
 runtime:
   enabled: false
+  mode: daemon            # daemon (Plan C interim) | controller (Plan D)
+
+  # Internal backend URL — MUST be the in-cluster service, not the public
+  # hostname (which is Cloudflare-Access-gated).
+  serverUrl: http://multica-backend.multica.svc:8080
+
+  tokenSecretName: multica-token
+  gitSshSecretName: multica-git-ssh
+
+  # The single watched workspace for the daemon-mode runtime.
+  workspaceId: ""
+
+  daemon:
+    replicaCount: 1
+    deviceName: multica-cluster
+    maxConcurrentTasks: 2
+    image: { name: multica-runtime-claude, tag: "" }   # tag "" → falls back to image.tag
+    agent:
+      provider: claude
+      auth: oauth                       # oauth | apiKey
+      oauthSecretName: multica-claude-oauth
+      apiKeySecretName: ""
+      apiKeySecretKey: ANTHROPIC_API_KEY
+      model: ""
+      extraArgs: ""
+    workspacesRoot: /work
+    resources:
+      requests: { cpu: 500m, memory: 1Gi }
+      limits:   { cpu: 2,    memory: 4Gi }
 
 # ── Bootstrap helpers (Plan E fills this) ──────────────────
 bootstrap:
