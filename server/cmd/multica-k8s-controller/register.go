@@ -28,12 +28,16 @@ func RegisterAll(ctx context.Context, cli *daemon.Client, cfg *Config) ([]Regist
 	out := make([]Registered, 0, len(cfg.Workspaces))
 	for _, w := range cfg.Workspaces {
 		daemonID := stableDaemonID(cfg.DaemonIDPrefix, w.ID, w.Provider)
+		cliVersion := cfg.CLIVersion
+		if cliVersion == "" || cliVersion == "dev" {
+			cliVersion = "v0.3.5"
+		}
 		req := map[string]any{
 			"workspace_id":      w.ID,
 			"daemon_id":         daemonID,
 			"legacy_daemon_ids": []string{},
 			"device_name":       cfg.DeviceName,
-			"cli_version":       "k8s-controller",
+			"cli_version":       cliVersion,
 			"runtimes": []map[string]any{
 				{"name": w.AgentName, "type": w.Provider, "version": "unknown", "status": "online"},
 			},

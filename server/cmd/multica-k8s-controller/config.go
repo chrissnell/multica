@@ -27,6 +27,7 @@ type Config struct {
 
 	DaemonIDPrefix string // for register payload's daemon_id; default "k8s-controller"
 	DeviceName     string // human-readable runtime name; default "multica-cluster"
+	CLIVersion     string // multica CLI version reported to the server; set by main from -ldflags
 }
 
 type WorkspaceConfig struct {

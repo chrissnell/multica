@@ -14,6 +14,11 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+// version is written by the build via -ldflags "-X main.version=...".
+// Used as the daemon `cli_version` so Multica's CLI-version gate
+// (MIN_QUICK_CREATE_CLI_VERSION) accepts agent-create flows.
+var version = "dev"
+
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	if err := run(logger); err != nil {
@@ -27,6 +32,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	cfg.CLIVersion = version
 
 	// In-cluster k8s client.
 	restCfg, err := rest.InClusterConfig()
