@@ -125,7 +125,10 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # Personal-fork GHCR push needs a PAT — GITHUB_TOKEN can't create
+          # new packages in a user namespace. Falls back to GITHUB_TOKEN for
+          # the org repo where the auto-issued token works.
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Build and push by digest
         id: build
@@ -191,7 +194,10 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # Personal-fork GHCR push needs a PAT — GITHUB_TOKEN can't create
+          # new packages in a user namespace. Falls back to GITHUB_TOKEN for
+          # the org repo where the auto-issued token works.
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
@@ -242,7 +248,10 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # Personal-fork GHCR push needs a PAT — GITHUB_TOKEN can't create
+          # new packages in a user namespace. Falls back to GITHUB_TOKEN for
+          # the org repo where the auto-issued token works.
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Build and push by digest
         id: build
@@ -308,7 +317,10 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # Personal-fork GHCR push needs a PAT — GITHUB_TOKEN can't create
+          # new packages in a user namespace. Falls back to GITHUB_TOKEN for
+          # the org repo where the auto-issued token works.
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
@@ -363,7 +375,10 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # Personal-fork GHCR push needs a PAT — GITHUB_TOKEN can't create
+          # new packages in a user namespace. Falls back to GITHUB_TOKEN for
+          # the org repo where the auto-issued token works.
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Build and push by digest
         id: build
@@ -429,7 +444,10 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # Personal-fork GHCR push needs a PAT — GITHUB_TOKEN can't create
+          # new packages in a user namespace. Falls back to GITHUB_TOKEN for
+          # the org repo where the auto-issued token works.
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
@@ -483,7 +501,10 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # Personal-fork GHCR push needs a PAT — GITHUB_TOKEN can't create
+          # new packages in a user namespace. Falls back to GITHUB_TOKEN for
+          # the org repo where the auto-issued token works.
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Build and push by digest
         id: build
@@ -548,7 +569,10 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # Personal-fork GHCR push needs a PAT — GITHUB_TOKEN can't create
+          # new packages in a user namespace. Falls back to GITHUB_TOKEN for
+          # the org repo where the auto-issued token works.
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
