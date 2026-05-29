@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/daemon"
 )
@@ -71,4 +72,22 @@ func RegisterAll(ctx context.Context, cli *daemon.Client, cfg *Config) ([]Regist
 func stableDaemonID(prefix, workspaceID, provider string) string {
 	h := sha1.Sum([]byte(prefix + "|" + workspaceID + "|" + provider))
 	return prefix + "-" + hex.EncodeToString(h[:8])
+}
+
+// RunHeartbeatLoop sends SendHeartbeat for every Registered runtime on each
+// tick of `interval`, until ctx is cancelled. Heartbeats are sent
+// sequentially; the daemon API already tolerates burstiness from one client.
+func RunHeartbeatLoop(ctx context.Context, cli *daemon.Client, runtimes []Registered, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			for _, r := range runtimes {
+				_, _ = cli.SendHeartbeat(ctx, r.RuntimeID)
+			}
+		}
+	}
 }
