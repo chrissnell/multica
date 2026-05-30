@@ -23,13 +23,23 @@ func main() {
 	}
 }
 
-// run wires Config to the sync pipeline. Real implementation lands in Task 4.
 func run(cfg *Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	_ = ctx
-	_ = cfg
-	logger.Info("run stub", "version", version)
+
+	logger.Debug("starting", "version", version, "once", cfg.Once, "namespace", cfg.Namespace, "secret", cfg.SecretName)
+
+	k, err := LoadClusterClient(cfg.Context)
+	if err != nil {
+		return err
+	}
+	kc := &macOSKeychain{}
+
+	if cfg.Once {
+		_, err := SyncOnce(ctx, cfg, k, kc, logger)
+		return err
+	}
+	SyncLoop(ctx, cfg, k, kc, logger)
 	return nil
 }
 
