@@ -72,3 +72,13 @@ Resolve the controller image reference.
 {{- $tag := default .Values.image.tag $img.tag -}}
 {{- printf "%s/%s:%s" .Values.image.registry $img.name $tag -}}
 {{- end }}
+
+{{/*
+Resolve the claude-broker image reference.
+  {{ include "multica.claudeBrokerImage" . }}
+*/}}
+{{- define "multica.claudeBrokerImage" -}}
+{{- $img := .Values.runtime.claudeBroker.image -}}
+{{- $tag := default .Values.image.tag $img.tag -}}
+{{- printf "%s/%s:%s" .Values.image.registry $img.name $tag -}}
+{{- end }}
