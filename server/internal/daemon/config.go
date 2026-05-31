@@ -14,125 +14,24 @@ import (
 	"github.com/mattn/go-shellwords"
 )
 
-const (
-	DefaultServerURL                      = "ws://localhost:8080/ws"
-	DefaultPollInterval                   = 30 * time.Second
-	DefaultHeartbeatInterval              = 15 * time.Second
-	DefaultAgentTimeout                   = 2 * time.Hour
-	DefaultCodexSemanticInactivityTimeout = 10 * time.Minute
-	// DefaultAgentIdleWatchdog is the per-task safety net that force-stops a
-	// run when the backend has emitted no message for this long AND its
-	// message queue is empty. Backends like Claude Code can hang indefinitely
-	// on a stuck child process (e.g. `docker ps` against a frozen dockerd),
-	// in which case `cmd.Wait()` never returns and the task sits at "running"
-	// for its full DefaultAgentTimeout (2 h). The previous 5 min default
-	// killed legitimate long assistant outputs (e.g. RFC-length writeups)
-	// where the model streams a single message for many minutes without any
-	// daemon-visible activity — see MUL-2300. 30 min keeps the safety net for
-	// truly stuck runs (dockerd hang) while leaving headroom for long writes.
-	// Set MULTICA_AGENT_IDLE_WATCHDOG=0 to disable.
-	DefaultAgentIdleWatchdog       = 30 * time.Minute
-	DefaultRuntimeName             = "Local Agent"
-	DefaultWorkspaceSyncInterval   = 30 * time.Second
-	DefaultHealthPort              = 19514
-	DefaultMaxConcurrentTasks      = 20
-	DefaultGCInterval              = 1 * time.Hour
-	DefaultGCTTL                   = 24 * time.Hour // 1 day — AI-coding issues rarely stay open long
-	DefaultGCOrphanTTL             = 72 * time.Hour // 3 days — orphans with no meta (crashes, pre-GC leftovers)
-	DefaultGCArtifactTTL           = 12 * time.Hour // 12h — drop regenerable artifacts on completed but still-open issues
-	DefaultAutoUpdateCheckInterval = 6 * time.Hour  // how often the daemon polls GitHub for a newer CLI release
-)
-
-// DefaultGCArtifactPatterns lists basename matches that the GC loop treats as
-// regenerable build artifacts. Kept conservative: only directories that are
-// always cheap to recreate (`pnpm install`, `next build`, `turbo build`). Things
-// like `dist/`, `build/`, `.cache/` or `.venv/` may legitimately hold source or
-// release output in some repos and are NOT included by default — set
-// MULTICA_GC_ARTIFACT_PATTERNS to extend the list per deployment.
-var DefaultGCArtifactPatterns = []string{"node_modules", ".next", ".turbo"}
-
-// Config holds all daemon configuration.
-type Config struct {
-	ServerBaseURL                  string
-	DaemonID                       string
-	LegacyDaemonIDs                []string // historical daemon_ids this machine may have registered under; reported at register time so the server can merge old runtime rows
-	DeviceName                     string
-	RuntimeName                    string
-	CLIVersion                     string                // multica CLI version (e.g. "0.1.13")
-	LaunchedBy                     string                // "desktop" when spawned by the Electron app, empty for standalone
-	Profile                        string                // profile name (empty = default)
-	Agents                         map[string]AgentEntry // keyed by provider: claude, codex, copilot, opencode, openclaw, hermes, gemini, pi, cursor, kimi, kiro, antigravity
-	WorkspacesRoot                 string                // base path for execution envs (default: ~/multica_workspaces)
-	KeepEnvAfterTask               bool                  // preserve env after task for debugging
-	HealthPort                     int                   // local HTTP port for health checks (default: 19514)
-	MaxConcurrentTasks             int                   // max tasks running in parallel (default: 20)
-	GCEnabled                      bool                  // enable periodic workspace garbage collection (default: true)
-	GCInterval                     time.Duration         // how often the GC loop runs (default: 1h)
-	GCTTL                          time.Duration         // clean dirs whose issue is done/cancelled and updated_at < now()-TTL (default: 24h)
-	GCOrphanTTL                    time.Duration         // clean orphan dirs with no meta, or dirs whose issue gc-check returns 404, once they exceed this age (default: 72h). The 404 path uses the same TTL — a scoped-down token can't instantly wipe live workspaces.
-	GCArtifactTTL                  time.Duration         // when a task has been completed for at least this long but its issue is still open, drop regenerable artifacts (default: 12h, set 0 to disable)
-	GCArtifactPatterns             []string              // basename patterns whose subtrees are removed during artifact cleanup (default: node_modules, .next, .turbo)
-	AutoUpdateEnabled              bool                  // periodically check for a newer CLI release and self-update when idle (default: true on Multica Cloud, false on self-host)
-	AutoUpdateCheckInterval        time.Duration         // how often the auto-update loop polls for a new release (default: 6h)
-	PollInterval                   time.Duration
-	HeartbeatInterval              time.Duration
-	AgentTimeout                   time.Duration
-	CodexSemanticInactivityTimeout time.Duration
-	AgentIdleWatchdog              time.Duration // force-stop a run when the backend goes silent this long with an empty queue (0 = disabled)
-	ClaudeArgs                     []string
-	CodexArgs                      []string
-}
-
-// Overrides allows CLI flags to override environment variables and defaults.
-// Zero values are ignored and the env/default value is used instead.
-type Overrides struct {
-	ServerURL                      string
-	WorkspacesRoot                 string
-	PollInterval                   time.Duration
-	HeartbeatInterval              time.Duration
-	AgentTimeout                   time.Duration
-	CodexSemanticInactivityTimeout time.Duration
-	MaxConcurrentTasks             int
-	DaemonID                       string
-	DeviceName                     string
-	RuntimeName                    string
-	Profile                        string // profile name (empty = default)
-	HealthPort                     int    // health check port (0 = use default)
-	// DisableAutoUpdate, when true, forces the auto-update poller off. There
-	// is no symmetric "force on" override because the env/default already
-	// resolves to enabled; the flag exists so users can opt out from the CLI.
-	DisableAutoUpdate       bool
-	AutoUpdateCheckInterval time.Duration // 0 = use env/default
-}
-
-// LoadConfig builds the daemon configuration from environment variables
-// and optional CLI flag overrides.
-func LoadConfig(overrides Overrides) (Config, error) {
-	// Server URL: override > env > default
-	rawServerURL := envOrDefault("MULTICA_SERVER_URL", DefaultServerURL)
-	if overrides.ServerURL != "" {
-		rawServerURL = overrides.ServerURL
-	}
-	serverBaseURL, err := NormalizeServerBaseURL(rawServerURL)
-	if err != nil {
-		return Config{}, err
-	}
-
-	// Probe available agent CLIs. exec.LookPath is the primary path, but on
-	// macOS/Linux a GUI-launched daemon (Electron, Launchpad) does not
-	// inherit the user's interactive shell PATH — fnm/nvm/volta multishells,
-	// the Anthropic native installer prefix, and per-user npm prefixes all
-	// live in dirs that only get added to PATH by ~/.zshrc or ~/.bashrc.
-	// shellResolvedAgents asks the user's login shell, lazily on first miss,
-	// to resolve every standard agent name to its canonical absolute path,
-	// so we can find binaries the bare daemon process can't see. See
-	// resolveAgentsViaLoginShell for the details and constraints.
-	//
-	// Laziness matters: the happy path (every agent on the daemon's PATH or
-	// pinned to an explicit MULTICA_*_PATH) must not pay the cost of
-	// spawning the user's login shell — that touches their rc files and
-	// adds startup latency that scales with whatever they put in there. We
-	// only fork a shell when a bare command name actually missed LookPath.
+// ProbeAgents detects available agent CLIs on PATH and returns a map keyed by
+// provider name. Reused by both the daemon's LoadConfig and the run-task
+// subcommand (single-task mode), which needs the same probing logic without
+// the rest of LoadConfig's side effects (daemon ID resolution, GC durations,
+// etc.).
+//
+// Returns a non-empty map on success. Returns an error when no agent CLI is
+// found at all — the caller has no useful work it can do in that case.
+//
+// Implementation notes (kept here for the same reasons LoadConfig had them):
+// exec.LookPath is the primary path, but on macOS/Linux a GUI-launched daemon
+// (Electron, Launchpad) does not inherit the user's interactive shell PATH —
+// fnm/nvm/volta multishells, the Anthropic native installer prefix, and
+// per-user npm prefixes all live in dirs only added to PATH by ~/.zshrc /
+// ~/.bashrc. We lazily fall back to the login shell to canonicalise paths
+// the daemon process can't see, but only when a bare command name actually
+// missed LookPath — pinning MULTICA_*_PATH still takes the fast path.
+func ProbeAgents() (map[string]AgentEntry, error) {
 	var (
 		shellResolveOnce sync.Once
 		shellResolved    map[string]string
@@ -151,10 +50,9 @@ func LoadConfig(overrides Overrides) (Config, error) {
 				Model: strings.TrimSpace(os.Getenv(modelEnv)),
 			}, true
 		}
-		// The shell fallback only rescues bare command names. An operator
-		// who pinned MULTICA_*_PATH to an absolute or relative path that
-		// doesn't exist should hard-miss, not silently get a different
-		// binary.
+		// The shell fallback only rescues bare command names. An operator who
+		// pinned MULTICA_*_PATH to an absolute or relative path that doesn't
+		// exist should hard-miss, not silently get a different binary.
 		if strings.ContainsAny(cmd, "/\\") {
 			return AgentEntry{}, false
 		}
@@ -215,13 +113,124 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	}
 	// Antigravity has no `--model` flag and ModelSelectionSupported returns
 	// false for it (see server/pkg/agent/models.go). Pass an empty modelEnv
-	// so we don't seed AgentEntry.Model from an environment variable that
-	// the backend would silently ignore, and don't lead users to set it.
+	// so we don't seed AgentEntry.Model from an environment variable that the
+	// backend would silently ignore, and don't lead users to set it.
 	if e, ok := probe("MULTICA_ANTIGRAVITY_PATH", "agy", ""); ok {
 		agents["antigravity"] = e
 	}
 	if len(agents) == 0 {
-		return Config{}, fmt.Errorf("no agent CLI found: install claude, codex, copilot, opencode, openclaw, hermes, gemini, pi, cursor-agent, kimi, kiro-cli, or agy and ensure it is on PATH")
+		return nil, fmt.Errorf("no agent CLI found: install claude, codex, copilot, opencode, openclaw, hermes, gemini, pi, cursor-agent, kimi, kiro-cli, or agy and ensure it is on PATH")
+	}
+	return agents, nil
+}
+
+const (
+	DefaultServerURL                      = "ws://localhost:8080/ws"
+	DefaultPollInterval                   = 30 * time.Second
+	DefaultHeartbeatInterval              = 15 * time.Second
+	DefaultAgentTimeout                   = 2 * time.Hour
+	DefaultCodexSemanticInactivityTimeout = 10 * time.Minute
+	// DefaultAgentIdleWatchdog is the per-task safety net that force-stops a
+	// run when the backend has emitted no message for this long AND its
+	// message queue is empty. Backends like Claude Code can hang indefinitely
+	// on a stuck child process (e.g. `docker ps` against a frozen dockerd),
+	// in which case `cmd.Wait()` never returns and the task sits at "running"
+	// for its full DefaultAgentTimeout (2 h). The previous 5 min default
+	// killed legitimate long assistant outputs (e.g. RFC-length writeups)
+	// where the model streams a single message for many minutes without any
+	// daemon-visible activity — see MUL-2300. 30 min keeps the safety net for
+	// truly stuck runs (dockerd hang) while leaving headroom for long writes.
+	// Set MULTICA_AGENT_IDLE_WATCHDOG=0 to disable.
+	DefaultAgentIdleWatchdog = 30 * time.Minute
+	DefaultRuntimeName                    = "Local Agent"
+	DefaultWorkspaceSyncInterval          = 30 * time.Second
+	DefaultHealthPort                     = 19514
+	DefaultMaxConcurrentTasks             = 20
+	DefaultGCInterval                     = 1 * time.Hour
+	DefaultGCTTL                          = 24 * time.Hour // 1 day — AI-coding issues rarely stay open long
+	DefaultGCOrphanTTL                    = 72 * time.Hour // 3 days — orphans with no meta (crashes, pre-GC leftovers)
+	DefaultGCArtifactTTL                  = 12 * time.Hour // 12h — drop regenerable artifacts on completed but still-open issues
+	DefaultAutoUpdateCheckInterval        = 6 * time.Hour  // how often the daemon polls GitHub for a newer CLI release
+)
+
+// DefaultGCArtifactPatterns lists basename matches that the GC loop treats as
+// regenerable build artifacts. Kept conservative: only directories that are
+// always cheap to recreate (`pnpm install`, `next build`, `turbo build`). Things
+// like `dist/`, `build/`, `.cache/` or `.venv/` may legitimately hold source or
+// release output in some repos and are NOT included by default — set
+// MULTICA_GC_ARTIFACT_PATTERNS to extend the list per deployment.
+var DefaultGCArtifactPatterns = []string{"node_modules", ".next", ".turbo"}
+
+// Config holds all daemon configuration.
+type Config struct {
+	ServerBaseURL                  string
+	DaemonID                       string
+	LegacyDaemonIDs                []string // historical daemon_ids this machine may have registered under; reported at register time so the server can merge old runtime rows
+	DeviceName                     string
+	RuntimeName                    string
+	CLIVersion                     string                // multica CLI version (e.g. "0.1.13")
+	LaunchedBy                     string                // "desktop" when spawned by the Electron app, empty for standalone
+	Profile                        string                // profile name (empty = default)
+	Agents                         map[string]AgentEntry // keyed by provider: claude, codex, copilot, opencode, openclaw, hermes, gemini, pi, cursor, kimi, kiro
+	WorkspacesRoot                 string                // base path for execution envs (default: ~/multica_workspaces)
+	KeepEnvAfterTask               bool                  // preserve env after task for debugging
+	HealthPort                     int                   // local HTTP port for health checks (default: 19514)
+	MaxConcurrentTasks             int                   // max tasks running in parallel (default: 20)
+	GCEnabled                      bool                  // enable periodic workspace garbage collection (default: true)
+	GCInterval                     time.Duration         // how often the GC loop runs (default: 1h)
+	GCTTL                          time.Duration         // clean dirs whose issue is done/cancelled and updated_at < now()-TTL (default: 24h)
+	GCOrphanTTL                    time.Duration         // clean orphan dirs with no meta, or dirs whose issue gc-check returns 404, once they exceed this age (default: 72h). The 404 path uses the same TTL — a scoped-down token can't instantly wipe live workspaces.
+	GCArtifactTTL                  time.Duration         // when a task has been completed for at least this long but its issue is still open, drop regenerable artifacts (default: 12h, set 0 to disable)
+	GCArtifactPatterns             []string              // basename patterns whose subtrees are removed during artifact cleanup (default: node_modules, .next, .turbo)
+	AutoUpdateEnabled              bool                  // periodically check for a newer CLI release and self-update when idle (default: true on Multica Cloud, false on self-host)
+	AutoUpdateCheckInterval        time.Duration         // how often the auto-update loop polls for a new release (default: 6h)
+	PollInterval                   time.Duration
+	HeartbeatInterval              time.Duration
+	AgentTimeout                   time.Duration
+	CodexSemanticInactivityTimeout time.Duration
+	AgentIdleWatchdog              time.Duration // force-stop a run when the backend goes silent this long with an empty queue (0 = disabled)
+	ClaudeArgs                     []string
+	CodexArgs                      []string
+}
+
+// Overrides allows CLI flags to override environment variables and defaults.
+// Zero values are ignored and the env/default value is used instead.
+type Overrides struct {
+	ServerURL                      string
+	WorkspacesRoot                 string
+	PollInterval                   time.Duration
+	HeartbeatInterval              time.Duration
+	AgentTimeout                   time.Duration
+	CodexSemanticInactivityTimeout time.Duration
+	MaxConcurrentTasks             int
+	DaemonID                       string
+	DeviceName                     string
+	RuntimeName                    string
+	Profile                        string // profile name (empty = default)
+	HealthPort                     int    // health check port (0 = use default)
+	// DisableAutoUpdate, when true, forces the auto-update poller off. There
+	// is no symmetric "force on" override because the env/default already
+	// resolves to enabled; the flag exists so users can opt out from the CLI.
+	DisableAutoUpdate       bool
+	AutoUpdateCheckInterval time.Duration // 0 = use env/default
+}
+
+// LoadConfig builds the daemon configuration from environment variables
+// and optional CLI flag overrides.
+func LoadConfig(overrides Overrides) (Config, error) {
+	// Server URL: override > env > default
+	rawServerURL := envOrDefault("MULTICA_SERVER_URL", DefaultServerURL)
+	if overrides.ServerURL != "" {
+		rawServerURL = overrides.ServerURL
+	}
+	serverBaseURL, err := NormalizeServerBaseURL(rawServerURL)
+	if err != nil {
+		return Config{}, err
+	}
+
+	agents, err := ProbeAgents()
+	if err != nil {
+		return Config{}, err
 	}
 
 	claudeArgs, err := shellArgsFromEnv("MULTICA_CLAUDE_ARGS")
@@ -559,6 +568,8 @@ var defaultAgentCommandNames = []string{
 	"gemini", "pi", "cursor-agent", "copilot", "kimi", "kiro-cli", "agy",
 }
 
+// codexDesktopAppBundlePaths returns the absolute paths where the Codex
+// Desktop app bundles its CLI on macOS. var-not-func so tests can stub it.
 var codexDesktopAppBundlePaths = func() []string {
 	paths := []string{
 		"/Applications/Codex.app/Contents/Resources/codex",
