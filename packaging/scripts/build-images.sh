@@ -43,6 +43,7 @@ declare -A IMAGES=(
   [postgres]="packaging/docker/postgres/Dockerfile"
   [controller]="packaging/docker/controller/Dockerfile"
   [claude-broker]="packaging/docker/claude-broker/Dockerfile"
+  [repocache]="packaging/docker/repocache/Dockerfile"
 )
 
 build_runtime() {

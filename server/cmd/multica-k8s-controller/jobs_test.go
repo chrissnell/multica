@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/daemon"
@@ -71,7 +72,7 @@ func TestCreateJob_AndPayloadConfigMap(t *testing.T) {
 		RuntimeID: "rt-1",
 	}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{})
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +123,7 @@ func TestCreateJob_BrokerMode(t *testing.T) {
 	}
 	cb := ClaudeBrokerOptions{Enabled: true, AccessTokenSecret: "multica-claude-broker-access-token", SecretKey: "access_token"}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", cb)
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", cb, RepoCacheOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,3 +187,130 @@ func hasVolume(vs []corev1.Volume, name string) bool {
 	}
 	return false
 }
+
+func hasVolumeMount(ms []corev1.VolumeMount, name string) *corev1.VolumeMount {
+	for i := range ms {
+		if ms[i].Name == name {
+			return &ms[i]
+		}
+	}
+	return nil
+}
+
+// TestDispatchJob_WithRepoCache asserts that, when RepoCacheOptions.Enabled,
+// DispatchJob:
+//   - creates a per-task gitconfig ConfigMap whose content rewrites every
+//     workspace repo URL onto file:// paths under the cache mount, and
+//   - adds both the repocache PVC (RO) and the gitconfig CM as mounts on the
+//     runtask container.
+func TestDispatchJob_WithRepoCache(t *testing.T) {
+	k := fake.NewSimpleClientset()
+	r := Registered{
+		WorkspaceID: "ws-rc",
+		AgentName:   "Lambda", Provider: "claude",
+		Image:   "registry/multica-runtime-claude:dev",
+		PVCSize: "5Gi",
+	}
+	task := daemon.Task{
+		ID: "task-rc-1", IssueID: "iss-1", AgentID: "ag-1", WorkspaceID: r.WorkspaceID,
+		RuntimeID: "rt-1",
+		Repos: []daemon.RepoData{
+			{URL: "https://github.com/chrissnell/graywolf.git"},
+		},
+	}
+	rc := RepoCacheOptions{
+		Enabled:   true,
+		PVCName:   "multica-repocache-repos",
+		MountPath: "/repos",
+	}
+
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Per-task gitconfig CM exists and includes the expected insteadOf entry.
+	gcCM, err := k.CoreV1().ConfigMaps("multica").Get(context.Background(), "task-"+task.ID[:8]+"-gitconfig", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("gitconfig CM missing: %v", err)
+	}
+	content := gcCM.Data[".gitconfig"]
+	for _, want := range []string{
+		`[url "file:///repos/ws-rc/github.com+chrissnell+graywolf.git"]`,
+		"insteadOf = https://github.com/chrissnell/graywolf",
+		"insteadOf = git@github.com:chrissnell/graywolf",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("gitconfig missing %q\ngot:\n%s", want, content)
+		}
+	}
+
+	// Job spec: repocache PVC mounted RO, gitconfig CM subPath-mounted.
+	job, err := k.BatchV1().Jobs("multica").Get(context.Background(), jobName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Job missing: %v", err)
+	}
+	pod := job.Spec.Template.Spec
+	if !hasVolume(pod.Volumes, "repocache") {
+		t.Errorf("missing repocache volume in pod.Volumes")
+	}
+	if !hasVolume(pod.Volumes, "gitconfig") {
+		t.Errorf("missing gitconfig volume in pod.Volumes")
+	}
+	for _, v := range pod.Volumes {
+		if v.Name == "repocache" {
+			if v.PersistentVolumeClaim == nil || v.PersistentVolumeClaim.ClaimName != "multica-repocache-repos" {
+				t.Errorf("repocache PVC wired wrong: %+v", v.PersistentVolumeClaim)
+			}
+			if !v.PersistentVolumeClaim.ReadOnly {
+				t.Errorf("repocache PVC must be ReadOnly")
+			}
+		}
+	}
+
+	runtask := pod.Containers[0]
+	rcMount := hasVolumeMount(runtask.VolumeMounts, "repocache")
+	if rcMount == nil || rcMount.MountPath != "/repos" || !rcMount.ReadOnly {
+		t.Errorf("repocache mount wrong: %+v", rcMount)
+	}
+	gcMount := hasVolumeMount(runtask.VolumeMounts, "gitconfig")
+	if gcMount == nil || gcMount.MountPath != "/home/multica/.gitconfig" || gcMount.SubPath != ".gitconfig" {
+		t.Errorf("gitconfig mount wrong: %+v", gcMount)
+	}
+}
+
+// TestDispatchJob_RepoCacheDisabled is the explicit "fallback to direct origin
+// clones" assertion called out in the plan's Task 19 sanity check.
+func TestDispatchJob_RepoCacheDisabled(t *testing.T) {
+	k := fake.NewSimpleClientset()
+	r := Registered{
+		WorkspaceID: "ws-rc", AgentName: "Lambda", Provider: "claude",
+		Image:   "registry/multica-runtime-claude:dev",
+		PVCSize: "5Gi",
+	}
+	task := daemon.Task{
+		ID: "task-norc", IssueID: "iss-1", AgentID: "ag-1", WorkspaceID: r.WorkspaceID,
+		RuntimeID: "rt-1",
+		Repos:     []daemon.RepoData{{URL: "https://github.com/chrissnell/graywolf.git"}},
+	}
+
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{Enabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No gitconfig CM created.
+	if _, err := k.CoreV1().ConfigMaps("multica").Get(context.Background(), "task-"+task.ID[:8]+"-gitconfig", metav1.GetOptions{}); err == nil {
+		t.Errorf("gitconfig CM was created despite repocache disabled")
+	}
+
+	job, _ := k.BatchV1().Jobs("multica").Get(context.Background(), jobName, metav1.GetOptions{})
+	pod := job.Spec.Template.Spec
+	if hasVolume(pod.Volumes, "repocache") {
+		t.Errorf("repocache volume present despite disabled")
+	}
+	if hasVolume(pod.Volumes, "gitconfig") {
+		t.Errorf("gitconfig volume present despite disabled")
+	}
+}
+
