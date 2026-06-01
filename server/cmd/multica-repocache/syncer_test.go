@@ -13,6 +13,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/daemon"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func testLogger(t *testing.T) *slog.Logger {
@@ -74,6 +75,48 @@ func TestSyncOnce_GathersRepoListsPerWorkspace(t *testing.T) {
 	msg := err.Error()
 	if !strings.Contains(msg, "ws-A") || !strings.Contains(msg, "ws-B") {
 		t.Errorf("expected error to mention both workspaces, got: %s", msg)
+	}
+}
+
+func TestSyncOnce_BumpsSyncErrorMetric(t *testing.T) {
+	srv := fakeReposServer(t, map[string][]string{
+		"ws-metric-A": {"https://example.invalid/owner/repo.git"},
+	})
+	defer srv.Close()
+
+	cli := daemon.NewClient(srv.URL)
+	cli.SetToken("tk")
+	dir := t.TempDir()
+	cache := repocache.New(filepath.Join(dir, "repos"), testLogger(t))
+
+	cfg := &Config{Workspaces: []WorkspaceConfig{{ID: "ws-metric-A"}}}
+	before := testutil.ToFloat64(syncTotal.WithLabelValues("ws-metric-A", "sync_error"))
+	_ = SyncOnce(context.Background(), cli, cache, cfg)
+	after := testutil.ToFloat64(syncTotal.WithLabelValues("ws-metric-A", "sync_error"))
+
+	if after-before < 1 {
+		t.Errorf("expected sync_error counter to increment by at least 1, before=%f after=%f", before, after)
+	}
+}
+
+func TestSyncOnce_BumpsReposFetchErrorMetric(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	cli := daemon.NewClient(srv.URL)
+	cli.SetToken("tk")
+	dir := t.TempDir()
+	cache := repocache.New(filepath.Join(dir, "repos"), testLogger(t))
+
+	cfg := &Config{Workspaces: []WorkspaceConfig{{ID: "ws-metric-B"}}}
+	before := testutil.ToFloat64(syncTotal.WithLabelValues("ws-metric-B", "repos_fetch_error"))
+	_ = SyncOnce(context.Background(), cli, cache, cfg)
+	after := testutil.ToFloat64(syncTotal.WithLabelValues("ws-metric-B", "repos_fetch_error"))
+
+	if after-before < 1 {
+		t.Errorf("expected repos_fetch_error counter to increment by at least 1, before=%f after=%f", before, after)
 	}
 }
 

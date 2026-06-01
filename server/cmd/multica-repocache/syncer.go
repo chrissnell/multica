@@ -20,6 +20,7 @@ func SyncOnce(ctx context.Context, cli *daemon.Client, cache *repocache.Cache, c
 	for _, w := range cfg.Workspaces {
 		resp, err := cli.GetWorkspaceRepos(ctx, w.ID)
 		if err != nil {
+			syncTotal.WithLabelValues(w.ID, "repos_fetch_error").Inc()
 			errs = append(errs, fmt.Sprintf("workspace %s: get repos: %v", w.ID, err))
 			continue
 		}
@@ -27,10 +28,14 @@ func SyncOnce(ctx context.Context, cli *daemon.Client, cache *repocache.Cache, c
 		for _, r := range resp.Repos {
 			repos = append(repos, repocache.RepoInfo{URL: r.URL})
 		}
+		start := time.Now()
 		if err := cache.Sync(w.ID, repos); err != nil {
+			syncTotal.WithLabelValues(w.ID, "sync_error").Inc()
 			errs = append(errs, fmt.Sprintf("workspace %s: sync: %v", w.ID, err))
 			continue
 		}
+		fetchDuration.WithLabelValues(w.ID).Observe(time.Since(start).Seconds())
+		syncTotal.WithLabelValues(w.ID, "ok").Inc()
 	}
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "; "))
