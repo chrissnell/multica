@@ -22,6 +22,7 @@ type Config struct {
 	Workspaces      []WorkspaceConfig    `yaml:"workspaces"`
 	ImagePullSecret string               `yaml:"imagePullSecret"`
 	ClaudeBroker    ClaudeBrokerOptions  `yaml:"claudeBroker"`
+	RepoCache       RepoCacheOptions     `yaml:"repoCache"`
 
 	PollInterval      time.Duration
 	HeartbeatInterval time.Duration
@@ -52,6 +53,21 @@ type ClaudeBrokerOptions struct {
 	Enabled           bool   `yaml:"enabled"`
 	AccessTokenSecret string `yaml:"accessTokenSecret"` // default multica-claude-broker-access-token
 	SecretKey         string `yaml:"secretKey"`         // default access_token
+}
+
+// RepoCacheOptions controls whether worker Job pods mount the cluster-wide
+// repo cache (Plan F.1). When Enabled, the controller:
+//   - mounts PVCName at MountPath (read-only) on every worker pod, and
+//   - generates a per-task gitconfig ConfigMap whose url.<base>.insteadOf
+//     entries rewrite https://github.com/{org}/{repo}(.git)? and
+//     git@github.com:{org}/{repo}(.git)? URLs into file:///{MountPath}/{ws}/{slug}.
+//
+// Disabling this falls back to direct origin clones — the worker pod runs
+// `git clone` against GitHub directly.
+type RepoCacheOptions struct {
+	Enabled   bool   `yaml:"enabled"`
+	PVCName   string `yaml:"pvcName"`   // default multica-repocache-repos
+	MountPath string `yaml:"mountPath"` // default /repos
 }
 
 func LoadConfig() (*Config, error) {
@@ -119,6 +135,16 @@ func LoadConfig() (*Config, error) {
 		}
 		if cfg.ClaudeBroker.SecretKey == "" {
 			cfg.ClaudeBroker.SecretKey = "access_token"
+		}
+	}
+
+	// RepoCache defaults — only meaningful when Enabled.
+	if cfg.RepoCache.Enabled {
+		if cfg.RepoCache.PVCName == "" {
+			cfg.RepoCache.PVCName = "multica-repocache-repos"
+		}
+		if cfg.RepoCache.MountPath == "" {
+			cfg.RepoCache.MountPath = "/repos"
 		}
 	}
 

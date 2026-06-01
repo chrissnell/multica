@@ -104,7 +104,12 @@ func EnsurePVC(ctx context.Context, k kubernetes.Interface, namespace string, r 
 // expanded a refresh_token tarball into ~/.claude/. The two modes are
 // mutually exclusive — when broker mode is on, claude-oauth-secret is not
 // mounted at all (worker pods never see the refresh_token).
-func DispatchJob(ctx context.Context, k kubernetes.Interface, namespace string, r Registered, t daemon.Task, imagePullSecret, pvc string, cb ClaudeBrokerOptions) (string, error) {
+//
+// When rc.Enabled is true (Plan F.1), the Job additionally mounts the cluster
+// repo-cache PVC read-only at rc.MountPath and a per-task gitconfig ConfigMap
+// at /home/multica/.gitconfig whose url.<base>.insteadOf rewrites turn the
+// agent's plain `git clone <origin-url>` into a sub-second local file:// clone.
+func DispatchJob(ctx context.Context, k kubernetes.Interface, namespace string, r Registered, t daemon.Task, imagePullSecret, pvc string, cb ClaudeBrokerOptions, rc RepoCacheOptions) (string, error) {
 	payload, err := json.Marshal(t)
 	if err != nil {
 		return "", fmt.Errorf("marshal task: %w", err)
@@ -119,6 +124,24 @@ func DispatchJob(ctx context.Context, k kubernetes.Interface, namespace string, 
 	}
 	if _, err := k.CoreV1().ConfigMaps(namespace).Create(ctx, cm, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
 		return "", fmt.Errorf("create payload CM: %w", err)
+	}
+
+	// Per-task gitconfig ConfigMap for the repo-cache URL rewrites. We create
+	// it unconditionally when repocache is enabled, even when t.Repos is
+	// empty — that's a harmless empty file, and never having to special-case
+	// "missing volume" simplifies the pod spec below.
+	gitconfigCMName := "task-" + shortID(t.ID) + "-gitconfig"
+	if rc.Enabled {
+		gitconfigCM := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: gitconfigCMName, Namespace: namespace,
+				Labels: jobLabels(r, t),
+			},
+			Data: map[string]string{".gitconfig": gitconfigForTask(r.WorkspaceID, rc.MountPath, t.Repos)},
+		}
+		if _, err := k.CoreV1().ConfigMaps(namespace).Create(ctx, gitconfigCM, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+			return "", fmt.Errorf("create gitconfig CM: %w", err)
+		}
 	}
 
 	jobName := "task-" + shortID(t.ID)
@@ -167,6 +190,32 @@ func DispatchJob(ctx context.Context, k kubernetes.Interface, namespace string, 
 	// drops them entirely (the broker owns auth, worker pods have no
 	// refresh_token to expand).
 	var initContainers []corev1.Container
+
+	if rc.Enabled {
+		volumes = append(volumes,
+			corev1.Volume{
+				Name: "repocache",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: rc.PVCName,
+						ReadOnly:  true,
+					},
+				},
+			},
+			corev1.Volume{
+				Name: "gitconfig",
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: gitconfigCMName},
+					},
+				},
+			},
+		)
+		runtaskMounts = append(runtaskMounts,
+			corev1.VolumeMount{Name: "repocache", MountPath: rc.MountPath, ReadOnly: true},
+			corev1.VolumeMount{Name: "gitconfig", MountPath: "/home/multica/.gitconfig", SubPath: ".gitconfig", ReadOnly: true},
+		)
+	}
 
 	if cb.Enabled {
 		// Broker mode: inject CLAUDE_CODE_OAUTH_TOKEN from the broker's
