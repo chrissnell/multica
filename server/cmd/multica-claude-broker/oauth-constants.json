@@ -4,10 +4,10 @@
   "version_header": "oauth-2025-04-20",
   "scopes": "user:profile user:inference user:sessions:claude_code user:mcp_servers",
   "_meta": {
-    "extracted_at": "2026-05-30T03:13:54Z",
-    "extracted_from": "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
-    "claude_version": "2.1.148",
-    "format": "mach-o",
+    "extracted_at": "2026-06-05T12:43:02Z",
+    "extracted_from": "/tmp/tmp.VjNEi2C7Lr/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+    "claude_version": "2.1.165",
+    "format": "elf",
     "extractor_rev": "1"
   }
 }
