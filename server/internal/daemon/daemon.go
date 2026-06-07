@@ -1436,13 +1436,31 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		return
 	}
 
-	models, err := agent.ListModels(ctx, rt.Provider, entry.Path)
+	d.reportModelListResult(ctx, rt, requestID, BuildModelListPayload(ctx, rt.Provider, entry.Path))
+}
+
+// BuildModelListPayload runs model discovery for the given provider and
+// returns the wire payload to send back via ReportModelListResult. Shared
+// by the host daemon's heartbeat handler and the k8s controller's
+// heartbeat handler so the response shape stays consistent across both
+// runtime hosts.
+//
+// `executablePath` selects the agent CLI to probe; pass "" to let
+// agent.ListModels use the provider's default binary name on PATH. On
+// hosts without the CLI installed (e.g. the in-cluster controller),
+// `claude` falls back to the static catalog and thinking-level probing
+// silently no-ops — the static catalog already carries every model the
+// daemon advertises.
+//
+// Returns a `failed` payload (never an error) when discovery fails so
+// callers can forward the response to the server unconditionally.
+func BuildModelListPayload(ctx context.Context, provider, executablePath string) map[string]any {
+	models, err := agent.ListModels(ctx, provider, executablePath)
 	if err != nil {
-		d.reportModelListResult(ctx, rt, requestID, map[string]any{
+		return map[string]any{
 			"status": "failed",
 			"error":  err.Error(),
-		})
-		return
+		}
 	}
 
 	// Wire format matches handler.ModelEntry. Use a struct (not
@@ -1490,11 +1508,11 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		}
 		wire = append(wire, entry)
 	}
-	d.reportModelListResult(ctx, rt, requestID, map[string]any{
+	return map[string]any{
 		"status":    "completed",
 		"models":    wire,
-		"supported": agent.ModelSelectionSupported(rt.Provider),
-	})
+		"supported": agent.ModelSelectionSupported(provider),
+	}
 }
 
 func (d *Daemon) handleLocalSkillList(ctx context.Context, rt Runtime, requestID string) {

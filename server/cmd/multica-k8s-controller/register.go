@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/daemon"
@@ -81,6 +82,14 @@ func stableDaemonID(prefix, workspaceID, provider string) string {
 // RunHeartbeatLoop sends SendHeartbeat for every Registered runtime on each
 // tick of `interval`, until ctx is cancelled. Heartbeats are sent
 // sequentially; the daemon API already tolerates burstiness from one client.
+//
+// The heartbeat ack carries pending server-initiated requests (model list,
+// local skills, …). The controller services the ones that make sense from a
+// pod-dispatching, no-host-CLI host — today that's model_list only.
+// PendingLocalSkills / PendingLocalSkillImport are deliberately not handled:
+// there are no host-installed skill bundles to enumerate from inside the
+// cluster, so we let those server-side requests time out rather than reply
+// with synthetic "failed" payloads that would look like real errors in the UI.
 func RunHeartbeatLoop(ctx context.Context, cli *daemon.Client, runtimes []Registered, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -90,8 +99,43 @@ func RunHeartbeatLoop(ctx context.Context, cli *daemon.Client, runtimes []Regist
 			return
 		case <-t.C:
 			for _, r := range runtimes {
-				_, _ = cli.SendHeartbeat(ctx, r.RuntimeID)
+				ack, _ := cli.SendHeartbeat(ctx, r.RuntimeID)
+				dispatchHeartbeatActions(ctx, cli, r, ack)
 			}
 		}
+	}
+}
+
+// dispatchHeartbeatActions reacts to the pending-actions block in a heartbeat
+// ack. Each action is dispatched in its own goroutine so a slow report cannot
+// stall the next heartbeat tick.
+func dispatchHeartbeatActions(ctx context.Context, cli *daemon.Client, r Registered, ack *daemon.HeartbeatResponse) {
+	if ack == nil {
+		return
+	}
+	if ack.PendingModelList != nil {
+		go handleModelList(ctx, cli, r, ack.PendingModelList.ID)
+	}
+}
+
+// handleModelList answers a server-side model-list request by running
+// provider discovery in-process. The controller has no agent CLI binary
+// installed in its pod — for "claude" that means agent.ListModels returns
+// the static catalog and skips thinking-level probing, which is the right
+// answer here: the static catalog already carries every advertised model.
+//
+// Best-effort: single attempt, no retry. On a transient server-side failure
+// the request will reach the 60s server-side timeout and the UI's polling
+// loop will surface a clear "model discovery timed out" error rather than
+// silently hanging. The host daemon's retry loop is a `*Daemon`-bound helper
+// we deliberately don't carry into the controller — adding retry here can
+// happen later if we observe real transient failures in this path.
+func handleModelList(ctx context.Context, cli *daemon.Client, r Registered, requestID string) {
+	slog.Default().Info("model list requested",
+		"runtime_id", r.RuntimeID, "request_id", requestID, "provider", r.Provider)
+	payload := daemon.BuildModelListPayload(ctx, r.Provider, "")
+	if err := cli.ReportModelListResult(ctx, r.RuntimeID, requestID, payload); err != nil {
+		slog.Default().Error("model list report failed",
+			"runtime_id", r.RuntimeID, "request_id", requestID, "error", err)
 	}
 }

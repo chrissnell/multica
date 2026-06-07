@@ -58,6 +58,99 @@ func TestRegisterAll_MapsBackRuntimeIDs(t *testing.T) {
 	}
 }
 
+// TestHeartbeatLoop_RespondsToPendingModelList pins the regression fix for
+// "No Models Available" in the agent-create dropdown on k8s deployments.
+// The controller used to discard the heartbeat ack, so server-side
+// model_list requests sat unanswered until the 30s UI timeout. The loop
+// must (a) examine the ack and (b) POST a `completed` result containing
+// the static catalog for the runtime's provider.
+//
+// We use a `gemini` runtime here rather than `claude` to make the test
+// hermetic: claude discovery shells out to `claude --help` for thinking-
+// level probing, which on a dev host that has the CLI installed slows the
+// test down. Gemini has no shellout (`geminiStaticModels()` returns
+// directly). The controller code path is provider-agnostic.
+func TestHeartbeatLoop_RespondsToPendingModelList(t *testing.T) {
+	var (
+		mu              sync.Mutex
+		modelReports    []map[string]any
+		heartbeatHits   int
+		alreadyAnswered bool
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/daemon/heartbeat":
+			mu.Lock()
+			heartbeatHits++
+			// Advertise a pending model_list once; further ticks ack empty
+			// so the test doesn't race on dozens of in-flight reports.
+			ack := map[string]any{}
+			if !alreadyAnswered {
+				ack["pending_model_list"] = map[string]any{"id": "req-abc"}
+			}
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(ack)
+		case "/api/daemon/runtimes/rt-X/models/req-abc/result":
+			body, _ := io.ReadAll(r.Body)
+			var payload map[string]any
+			_ = json.Unmarshal(body, &payload)
+			mu.Lock()
+			modelReports = append(modelReports, payload)
+			alreadyAnswered = true
+			mu.Unlock()
+			_, _ = io.WriteString(w, "{}")
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	cli := daemon.NewClient(srv.URL)
+	cli.SetToken("tk")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runtimes := []Registered{{RuntimeID: "rt-X", Provider: "gemini"}}
+
+	done := make(chan struct{})
+	go func() {
+		RunHeartbeatLoop(ctx, cli, runtimes, 10*time.Millisecond)
+		close(done)
+	}()
+
+	// Poll for the report rather than sleeping a fixed window — the
+	// async-goroutine timing in the loop makes a fixed sleep flaky on
+	// loaded CI runners.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(modelReports)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if heartbeatHits == 0 {
+		t.Fatalf("no heartbeats sent")
+	}
+	if len(modelReports) == 0 {
+		t.Fatalf("controller never reported a model_list result")
+	}
+	first := modelReports[0]
+	if got, want := first["status"], "completed"; got != want {
+		t.Fatalf("status: got %v want %v (payload=%+v)", got, want, first)
+	}
+	models, ok := first["models"].([]any)
+	if !ok || len(models) == 0 {
+		t.Fatalf("expected non-empty models list, got %#v", first["models"])
+	}
+}
+
 func TestHeartbeatLoop_SendsForEveryRuntime(t *testing.T) {
 	var (
 		mu    sync.Mutex
