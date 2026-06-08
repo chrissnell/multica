@@ -37,6 +37,19 @@ done
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
+# Read a version pin from packaging/<name>. Strips whitespace and fails if
+# the file is missing or empty — an unpinned build should fail loudly, not
+# silently resolve to "latest".
+read_pin() {
+  local name="$1"
+  local file="$ROOT/packaging/$name"
+  [ -f "$file" ] || { echo "missing pin file: packaging/$name" >&2; exit 1; }
+  local value
+  value="$(tr -d '[:space:]' < "$file")"
+  [ -n "$value" ] || { echo "packaging/$name is empty" >&2; exit 1; }
+  printf '%s' "$value"
+}
+
 declare -A IMAGES=(
   [backend]="Dockerfile"
   [web]="Dockerfile.web"
@@ -61,13 +74,29 @@ build_runtime() {
   # watcher workflow (.github/workflows/claude-version-watch.yml) bumps
   # this file via PR when a new release lands on npm.
   local claude_code_version
-  claude_code_version="$(tr -d '[:space:]' < "$ROOT/packaging/claude-code-version")"
-  [ -n "$claude_code_version" ] || { echo "packaging/claude-code-version is empty" >&2; exit 1; }
+  claude_code_version="$(read_pin claude-code-version)"
+
+  # Toolchain pins for the runtime base. Each lives in its own text file
+  # so future watcher workflows can bump them via PR (same pattern as
+  # claude-code-version).
+  local rust_version kotlin_version golangci_lint_version ktlint_version pnpm_version
+  rust_version="$(read_pin rust-version)"
+  kotlin_version="$(read_pin kotlin-version)"
+  golangci_lint_version="$(read_pin golangci-lint-version)"
+  ktlint_version="$(read_pin ktlint-version)"
+  pnpm_version="$(read_pin pnpm-version)"
 
   echo "==> Building $base (version=$version commit=$commit)"
+  echo "    rust=$rust_version kotlin=$kotlin_version pnpm=$pnpm_version"
+  echo "    golangci-lint=$golangci_lint_version ktlint=$ktlint_version"
   docker build --platform "$platform" \
     --build-arg VERSION="$version" \
     --build-arg COMMIT="$commit" \
+    --build-arg RUST_VERSION="$rust_version" \
+    --build-arg KOTLIN_VERSION="$kotlin_version" \
+    --build-arg GOLANGCI_LINT_VERSION="$golangci_lint_version" \
+    --build-arg KTLINT_VERSION="$ktlint_version" \
+    --build-arg PNPM_VERSION="$pnpm_version" \
     -f packaging/docker/runtime/Dockerfile.base \
     -t "$base" .
   if [[ "$push" -eq 1 ]]; then

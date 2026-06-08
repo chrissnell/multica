@@ -1,8 +1,20 @@
 # packaging/docker/runtime/Dockerfile.base
 #
 # Shared base for all Multica agent runtime images: the `multica` binary plus
-# the toolchain agents need (git, ssh, node, python, build tools). Per-provider
-# images (Dockerfile.claude, etc.) extend this and add their agent CLI.
+# full polyglot toolchains (Go, Rust + cargo-ndk, Node/pnpm, JDK/Kotlin,
+# Android SDK + NDK, Python) and the debuggers/linters agents need at
+# runtime. Per-provider images (Dockerfile.claude, etc.) extend this and
+# add their agent CLI.
+#
+# Tradeoff: this is a fat image (~8-10 GB) on purpose. Once a node has the
+# layers cached, pod startup is unaffected and agents working on polyglot
+# repos (Go + Rust + Svelte + Kotlin + Android) don't need to install
+# tooling per-job.
+#
+# Version pins for the language toolchains live in packaging/*-version text
+# files and are passed in as --build-arg by packaging/scripts/build-images.sh.
+# The ARGs have no defaults so an unpinned build fails loudly — matches the
+# CLAUDE_CODE_VERSION pattern in Dockerfile.claude.
 
 ARG GO_VERSION=1.26
 
@@ -21,17 +33,144 @@ RUN cd server && CGO_ENABLED=0 go build \
 # ── Runtime base ──────────────────────────────────────────────────────
 FROM node:22-bookworm
 
+# Strict pins — build-images.sh passes these from packaging/*-version.
+ARG RUST_VERSION
+ARG KOTLIN_VERSION
+ARG GOLANGCI_LINT_VERSION
+ARG KTLINT_VERSION
+ARG PNPM_VERSION
+# Android SDK/NDK component versions don't need a per-file pin (they rarely
+# bump). Defaults stay in-Dockerfile and can be overridden via --build-arg.
+ARG ANDROID_CMDLINE_TOOLS_VERSION=13114758
+ARG ANDROID_PLATFORM_VERSION=36
+ARG ANDROID_BUILD_TOOLS_VERSION=36.0.0
+ARG ANDROID_NDK_VERSION=27.2.12479018
+ARG CARGO_NDK_VERSION=3.5.4
+RUN test -n "$RUST_VERSION"             || { echo "RUST_VERSION build arg is required" >&2; exit 1; } \
+    && test -n "$KOTLIN_VERSION"        || { echo "KOTLIN_VERSION build arg is required" >&2; exit 1; } \
+    && test -n "$GOLANGCI_LINT_VERSION" || { echo "GOLANGCI_LINT_VERSION build arg is required" >&2; exit 1; } \
+    && test -n "$KTLINT_VERSION"        || { echo "KTLINT_VERSION build arg is required" >&2; exit 1; } \
+    && test -n "$PNPM_VERSION"          || { echo "PNPM_VERSION build arg is required" >&2; exit 1; }
+
+# Base apt packages: VCS, SSH, build/debug tooling, common dev utilities,
+# JDK 17 for Kotlin/Android Gradle Plugin 8.x.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       openssh-client \
       ca-certificates \
+      gnupg \
       python3 \
+      python3-pip \
+      python3-venv \
       python-is-python3 \
       build-essential \
+      pkg-config \
+      make \
+      cmake \
       ripgrep \
+      fd-find \
+      bat \
       curl \
+      wget \
       jq \
+      unzip \
+      zip \
+      gdb \
+      lldb \
+      strace \
+      ltrace \
+      lsof \
+      procps \
+      psmisc \
+      netcat-openbsd \
+      dnsutils \
+      iputils-ping \
+      net-tools \
+      tcpdump \
+      socat \
+      tmux \
+      vim-tiny \
+      less \
+      tree \
+      file \
+      htop \
+      sudo \
+      openjdk-17-jdk-headless \
+    && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
+    && ln -sf /usr/bin/batcat /usr/local/bin/bat \
     && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+
+# ── Go toolchain + Go-based linters/debugger ──────────────────────────
+COPY --from=multica-build /usr/local/go /usr/local/go
+ENV GOROOT=/usr/local/go \
+    GOPATH=/usr/local/gopath \
+    GOBIN=/usr/local/gobin \
+    PATH=/usr/local/gobin:/usr/local/go/bin:${PATH}
+RUN mkdir -p "$GOPATH" "$GOBIN" \
+    && go install github.com/go-delve/delve/cmd/dlv@latest \
+    && go install golang.org/x/tools/gopls@latest \
+    && go install honnef.co/go/tools/cmd/staticcheck@latest \
+    && go install mvdan.cc/gofumpt@latest \
+    && curl -fsSL "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64.tar.gz" \
+       | tar -xz -C /tmp \
+    && mv "/tmp/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64/golangci-lint" /usr/local/bin/ \
+    && rm -rf "/tmp/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64" \
+    && chmod -R a+rX "$GOPATH" "$GOBIN" \
+    && rm -rf /root/.cache/go-build
+
+# ── Rust toolchain + linters/LSP + cargo-ndk for Android cross-compile ─
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:${PATH}
+RUN curl -fsSL https://sh.rustup.rs \
+      | sh -s -- -y --no-modify-path --profile default --default-toolchain "${RUST_VERSION}" \
+    && rustup component add clippy rustfmt rust-analyzer rust-src \
+    && rustup target add \
+         aarch64-linux-android \
+         armv7-linux-androideabi \
+         x86_64-linux-android \
+         i686-linux-android \
+    && cargo install --locked --version "${CARGO_NDK_VERSION}" cargo-ndk \
+    && chmod -R a+rwX "$RUSTUP_HOME" "$CARGO_HOME" \
+    && rm -rf /tmp/cargo-install*
+
+# ── Kotlin compiler + ktlint ──────────────────────────────────────────
+RUN curl -fsSL -o /tmp/kotlin.zip \
+       "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
+    && unzip -q /tmp/kotlin.zip -d /opt \
+    && rm /tmp/kotlin.zip \
+    && ln -s /opt/kotlinc/bin/kotlinc /usr/local/bin/kotlinc \
+    && ln -s /opt/kotlinc/bin/kotlin  /usr/local/bin/kotlin \
+    && curl -fsSL -o /usr/local/bin/ktlint \
+       "https://github.com/pinterest/ktlint/releases/download/${KTLINT_VERSION}/ktlint" \
+    && chmod +x /usr/local/bin/ktlint
+
+# ── Android SDK + NDK ─────────────────────────────────────────────────
+ENV ANDROID_HOME=/opt/android-sdk \
+    ANDROID_SDK_ROOT=/opt/android-sdk
+RUN mkdir -p "$ANDROID_HOME/cmdline-tools" \
+    && curl -fsSL -o /tmp/cmdline-tools.zip \
+       "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" \
+    && unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools" \
+    && mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest" \
+    && rm /tmp/cmdline-tools.zip
+ENV PATH="${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${PATH}"
+RUN yes | sdkmanager --licenses > /dev/null \
+    && sdkmanager --install \
+         "platform-tools" \
+         "platforms;android-${ANDROID_PLATFORM_VERSION}" \
+         "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
+         "ndk;${ANDROID_NDK_VERSION}" \
+    && chmod -R a+rX "$ANDROID_HOME"
+ENV ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION} \
+    ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}
+
+# ── Node package managers via corepack ────────────────────────────────
+RUN corepack enable \
+    && corepack prepare "pnpm@${PNPM_VERSION}" --activate \
+    && corepack prepare "yarn@stable" --activate
 
 # Non-root user the daemon and agents run as.
 RUN groupadd -g 1001 multica \
@@ -48,7 +187,23 @@ RUN mkdir -p /home/multica/.ssh \
 
 USER multica
 WORKDIR /home/multica
-ENV HOME=/home/multica
+ENV HOME=/home/multica \
+    GOPATH=/home/multica/go \
+    PATH=/home/multica/go/bin:/usr/local/cargo/bin:/usr/local/gobin:/usr/local/go/bin:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${PATH}
 
-# Sanity: multica binary resolves and runs.
-RUN multica version || true
+# Sanity: key tools resolve on PATH for the multica user.
+RUN multica version || true \
+    && go version \
+    && dlv version \
+    && golangci-lint --version \
+    && rustc --version \
+    && cargo --version \
+    && cargo ndk --version \
+    && rust-analyzer --version \
+    && javac -version \
+    && kotlinc -version 2>&1 \
+    && ktlint --version \
+    && pnpm --version \
+    && yarn --version \
+    && sdkmanager --version \
+    && test -d "$ANDROID_NDK_HOME"
