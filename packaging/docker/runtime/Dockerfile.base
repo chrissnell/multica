@@ -41,6 +41,7 @@ ARG KTLINT_VERSION
 ARG PNPM_VERSION
 ARG KUBECTL_VERSION
 ARG HELM_VERSION
+ARG GH_VERSION
 # Android SDK/NDK component versions don't need a per-file pin (they rarely
 # bump). Defaults stay in-Dockerfile and can be overridden via --build-arg.
 ARG ANDROID_CMDLINE_TOOLS_VERSION=13114758
@@ -54,7 +55,8 @@ RUN test -n "$RUST_VERSION"             || { echo "RUST_VERSION build arg is req
     && test -n "$KTLINT_VERSION"        || { echo "KTLINT_VERSION build arg is required" >&2; exit 1; } \
     && test -n "$PNPM_VERSION"          || { echo "PNPM_VERSION build arg is required" >&2; exit 1; } \
     && test -n "$KUBECTL_VERSION"       || { echo "KUBECTL_VERSION build arg is required" >&2; exit 1; } \
-    && test -n "$HELM_VERSION"          || { echo "HELM_VERSION build arg is required" >&2; exit 1; }
+    && test -n "$HELM_VERSION"          || { echo "HELM_VERSION build arg is required" >&2; exit 1; } \
+    && test -n "$GH_VERSION"            || { echo "GH_VERSION build arg is required" >&2; exit 1; }
 
 # Base apt packages: VCS, SSH, build/debug tooling, common dev utilities,
 # JDK 17 for Kotlin/Android Gradle Plugin 8.x.
@@ -188,6 +190,17 @@ RUN curl -fsSL "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/ku
     && chmod +x /usr/local/bin/helm \
     && helm version --short
 
+# ── GitHub CLI (gh) ───────────────────────────────────────────────────
+# Static binary from upstream releases. Agents that need GitHub-side actions
+# (PR create/comment, issue ops) get gh on PATH. Auth is by GH_TOKEN env
+# var injected from a K8s Secret at pod runtime — nothing baked in here.
+RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+       | tar -xz -C /tmp \
+    && mv "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh \
+    && rm -rf "/tmp/gh_${GH_VERSION}_linux_amd64" \
+    && chmod +x /usr/local/bin/gh \
+    && gh --version
+
 # Non-root user the daemon and agents run as.
 RUN groupadd -g 1001 multica \
     && useradd -m -u 1001 -g 1001 -s /bin/bash multica
@@ -224,4 +237,5 @@ RUN multica version || true \
     && sdkmanager --version \
     && test -d "$ANDROID_NDK_HOME" \
     && kubectl version --client \
-    && helm version --short
+    && helm version --short \
+    && gh --version
