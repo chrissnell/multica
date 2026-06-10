@@ -216,6 +216,23 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		b.cfg.Logger.Info("claude finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
 		reportedSessionID := resolveSessionID(opts.ResumeSessionID, sessionID, finalStatus == "failed")
+		// Second clearing path: claude prints "No conversation found with
+		// session ID: <id>" to stderr when --resume was passed but the
+		// conversation jsonl doesn't exist in ~/.claude/projects/. In that
+		// case claude still emits a result message echoing the requested
+		// session id back, so the emitted/requested comparison in
+		// resolveSessionID can't tell the failure apart from a real mid-
+		// session error. Detect the canonical marker on stderr and clear
+		// the reported id so the daemon's retry-with-fresh-session fallback
+		// fires. Worker pods in controller mode rely on this because each
+		// Pod has a fresh ~/.claude until the first persisted task lands.
+		if reportedSessionID != "" && opts.ResumeSessionID != "" && finalStatus == "failed" &&
+			strings.Contains(stderrBuf.Tail(), "No conversation found with session ID") {
+			b.cfg.Logger.Info("claude resume target missing; clearing reported session id for daemon fallback",
+				"requested_resume", opts.ResumeSessionID,
+			)
+			reportedSessionID = ""
+		}
 		if reportedSessionID != sessionID {
 			b.cfg.Logger.Info("claude resume did not land; clearing fresh session id for daemon fallback",
 				"requested_resume", opts.ResumeSessionID,
