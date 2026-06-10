@@ -184,6 +184,16 @@ func DispatchJob(ctx context.Context, k kubernetes.Interface, namespace string, 
 		{Name: "claude-home", MountPath: "/home/multica/.claude"},
 		{Name: "git-ssh", MountPath: "/home/multica/.ssh-src", ReadOnly: true},
 		{Name: "work", MountPath: "/work"},
+		// Persist claude's per-conversation jsonl files across worker pods so
+		// `claude --resume <session-id>` can find prior conversations. Without
+		// this, /home/multica/.claude is the emptyDir mount above (fresh per
+		// pod) and every follow-up task fails the resume — "No conversation
+		// found with session ID" — even though the daemon stored a valid id
+		// in the DB. We re-mount the same workdir PVC at a subPath alongside
+		// the workdir itself; the PVC is already per-(workspace, agent, scope)
+		// via pvcName(), so session storage shares exactly the right blast
+		// radius. The kubelet creates the subPath directory on first use.
+		{Name: "work", MountPath: "/home/multica/.claude/projects", SubPath: "claude-projects"},
 	}
 
 	// initContainers default to the legacy claude-auth path; broker mode
