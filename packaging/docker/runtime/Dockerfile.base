@@ -31,7 +31,12 @@ RUN cd server && CGO_ENABLED=0 go build \
       -o /out/multica ./cmd/multica
 
 # ── Runtime base ──────────────────────────────────────────────────────
-FROM node:22-bookworm
+# node:22-trixie (Debian 13). The earlier node:22-bookworm base shipped a
+# stale debian-archive keyring that didn't include Debian's mid-2026 archive
+# signing key rotation, so `apt-get update` failed with "At least one
+# invalid signature was encountered" on every build. Trixie is the current
+# Debian stable and ships fresh keys.
+FROM node:22-trixie
 
 # Strict pins — build-images.sh passes these from packaging/*-version.
 ARG RUST_VERSION
@@ -59,7 +64,9 @@ RUN test -n "$RUST_VERSION"             || { echo "RUST_VERSION build arg is req
     && test -n "$GH_VERSION"            || { echo "GH_VERSION build arg is required" >&2; exit 1; }
 
 # Base apt packages: VCS, SSH, build/debug tooling, common dev utilities,
-# JDK 17 for Kotlin/Android Gradle Plugin 8.x.
+# JDK 21 for Kotlin/Android Gradle Plugin 8.x. (Trixie doesn't ship a JDK 17
+# headless package; AGP 8.x is documented to run on JDK 21, and Kotlin
+# requires only JDK 11+. JDK 17 source/target levels still build on JDK 21.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       openssh-client \
@@ -101,12 +108,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       file \
       htop \
       sudo \
-      openjdk-17-jdk-headless \
+      openjdk-21-jdk-headless \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
     && ln -sf /usr/bin/batcat /usr/local/bin/bat \
     && rm -rf /var/lib/apt/lists/*
 
-ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 
 # ── Go toolchain + Go-based linters/debugger ──────────────────────────
 COPY --from=multica-build /usr/local/go /usr/local/go
