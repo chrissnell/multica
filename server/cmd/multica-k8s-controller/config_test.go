@@ -110,3 +110,64 @@ workspaces:
 		t.Errorf("RepoCache.PVCName should be empty when disabled")
 	}
 }
+
+func TestLoadConfig_WorkerExtraEnv(t *testing.T) {
+	cfgDir := t.TempDir()
+	cfgYAML := []byte(`
+workspaces:
+  - id: 11111111-1111-1111-1111-111111111111
+    provider: claude
+    runtimeImage: ghcr.io/x/multica-runtime-claude:dev
+workerExtraEnv:
+  - name: CLOUDFLARE_API_TOKEN
+    secretName: multica-cloudflare
+    secretKey: api-token
+  - name: AWS_ACCESS_KEY_ID
+    secretName: multica-cloudflare
+    secretKey: access-key-id
+`)
+	if err := os.WriteFile(filepath.Join(cfgDir, "runtime.yaml"), cfgYAML, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MULTICA_SERVER_URL", "http://x")
+	t.Setenv("MULTICA_TOKEN", "tk")
+	t.Setenv("POD_NAMESPACE", "multica")
+	t.Setenv("CONTROLLER_CONFIG_DIR", cfgDir)
+
+	got, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(got.WorkerExtraEnv) != 2 {
+		t.Fatalf("WorkerExtraEnv len = %d, want 2", len(got.WorkerExtraEnv))
+	}
+	if got.WorkerExtraEnv[0].Name != "CLOUDFLARE_API_TOKEN" ||
+		got.WorkerExtraEnv[0].SecretName != "multica-cloudflare" ||
+		got.WorkerExtraEnv[0].SecretKey != "api-token" {
+		t.Errorf("WorkerExtraEnv[0] = %+v", got.WorkerExtraEnv[0])
+	}
+}
+
+func TestLoadConfig_WorkerExtraEnvRejectsIncomplete(t *testing.T) {
+	cfgDir := t.TempDir()
+	cfgYAML := []byte(`
+workspaces:
+  - id: 11111111-1111-1111-1111-111111111111
+    provider: claude
+    runtimeImage: ghcr.io/x/multica-runtime-claude:dev
+workerExtraEnv:
+  - name: CLOUDFLARE_API_TOKEN
+    secretName: multica-cloudflare
+`)
+	if err := os.WriteFile(filepath.Join(cfgDir, "runtime.yaml"), cfgYAML, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MULTICA_SERVER_URL", "http://x")
+	t.Setenv("MULTICA_TOKEN", "tk")
+	t.Setenv("POD_NAMESPACE", "multica")
+	t.Setenv("CONTROLLER_CONFIG_DIR", cfgDir)
+
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("expected error for incomplete workerExtraEnv entry, got nil")
+	}
+}

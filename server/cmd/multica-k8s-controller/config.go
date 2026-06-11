@@ -19,11 +19,12 @@ type Config struct {
 	Token         string
 	Namespace     string
 
-	Workspaces      []WorkspaceConfig   `yaml:"workspaces"`
-	ImagePullSecret string              `yaml:"imagePullSecret"`
-	ClaudeBroker    ClaudeBrokerOptions `yaml:"claudeBroker"`
-	RepoCache       RepoCacheOptions    `yaml:"repoCache"`
-	GitHubToken     GitHubTokenOptions  `yaml:"githubToken"`
+	Workspaces      []WorkspaceConfig    `yaml:"workspaces"`
+	ImagePullSecret string               `yaml:"imagePullSecret"`
+	ClaudeBroker    ClaudeBrokerOptions  `yaml:"claudeBroker"`
+	RepoCache       RepoCacheOptions     `yaml:"repoCache"`
+	GitHubToken     GitHubTokenOptions   `yaml:"githubToken"`
+	WorkerExtraEnv  []WorkerSecretEnvVar `yaml:"workerExtraEnv"`
 
 	PollInterval      time.Duration
 	HeartbeatInterval time.Duration
@@ -84,6 +85,19 @@ type RepoCacheOptions struct {
 type GitHubTokenOptions struct {
 	SecretName string `yaml:"secretName"`
 	SecretKey  string `yaml:"secretKey"` // default "token"
+}
+
+// WorkerSecretEnvVar injects one env var into worker Job pods, sourced via
+// secretKeyRef from a key in a K8s Secret. It's the generic path for
+// cluster-wide credentials that agent CLIs read straight from the environment
+// — e.g. Cloudflare R2 / wrangler / rclone (CLOUDFLARE_API_TOKEN,
+// AWS_ACCESS_KEY_ID, …). The Secret is created out-of-band (manually, or
+// synced from Vault by External Secrets Operator); the controller only
+// references it by name, so the source mechanism stays an ops concern.
+type WorkerSecretEnvVar struct {
+	Name       string `yaml:"name"`       // env var name set inside the pod
+	SecretName string `yaml:"secretName"` // K8s Secret to read from
+	SecretKey  string `yaml:"secretKey"`  // key within that Secret
 }
 
 func LoadConfig() (*Config, error) {
@@ -167,6 +181,14 @@ func LoadConfig() (*Config, error) {
 	// GitHubToken default key — only matters when a SecretName was set.
 	if cfg.GitHubToken.SecretName != "" && cfg.GitHubToken.SecretKey == "" {
 		cfg.GitHubToken.SecretKey = "token"
+	}
+
+	// Worker extra-env entries must be fully specified — there's no sensible
+	// default for the env name or the secret key (they vary per credential).
+	for i, e := range cfg.WorkerExtraEnv {
+		if e.Name == "" || e.SecretName == "" || e.SecretKey == "" {
+			return nil, fmt.Errorf("workerExtraEnv[%d]: name, secretName, secretKey are all required", i)
+		}
 	}
 
 	return cfg, nil

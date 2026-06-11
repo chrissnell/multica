@@ -80,6 +80,15 @@ spec:
                   name: {{ .Values.runtime.githubTokenSecretName }}
                   key: {{ .Values.runtime.githubTokenSecretKey }}
             {{- end }}
+            {{- if .Values.runtime.cloudflare.enabled }}
+            {{- range .Values.runtime.cloudflare.env }}
+            - name: {{ .name | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.runtime.cloudflare.secretName | quote }}
+                  key: {{ .secretKey | quote }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.runtime.daemon.agent.model }}
             - name: MULTICA_CLAUDE_MODEL
               value: {{ . | quote }}

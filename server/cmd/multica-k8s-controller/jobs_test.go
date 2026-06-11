@@ -72,7 +72,7 @@ func TestCreateJob_AndPayloadConfigMap(t *testing.T) {
 		RuntimeID: "rt-1",
 	}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{})
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestCreateJob_BrokerMode(t *testing.T) {
 	}
 	cb := ClaudeBrokerOptions{Enabled: true, AccessTokenSecret: "multica-claude-broker-access-token", SecretKey: "access_token"}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", cb, RepoCacheOptions{}, GitHubTokenOptions{})
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", cb, RepoCacheOptions{}, GitHubTokenOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestDispatchJob_WithGitHubToken(t *testing.T) {
 	}
 	gh := GitHubTokenOptions{SecretName: "multica-github-token", SecretKey: "token"}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, gh)
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, gh, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestDispatchJob_NoGitHubToken(t *testing.T) {
 		RuntimeID: "rt-1",
 	}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{})
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,6 +250,55 @@ func TestDispatchJob_NoGitHubToken(t *testing.T) {
 	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
 		if e.Name == "GH_TOKEN" {
 			t.Errorf("GH_TOKEN must not be set when SecretName is empty; got %+v", e)
+		}
+	}
+}
+
+// TestDispatchJob_WithWorkerExtraEnv asserts that each WorkerSecretEnvVar is
+// injected into the runtask container as an env var sourced via secretKeyRef
+// from the named Secret/key — the path that delivers the Cloudflare R2 creds
+// (CLOUDFLARE_API_TOKEN, AWS_*) to wrangler/rclone.
+func TestDispatchJob_WithWorkerExtraEnv(t *testing.T) {
+	k := fake.NewSimpleClientset()
+	r := Registered{
+		WorkspaceID: "ws-1", AgentName: "Lambda", Provider: "claude",
+		Image:   "registry/multica-runtime-claude:v0.3.0-mk1",
+		PVCSize: "5Gi",
+	}
+	task := daemon.Task{
+		ID: "task-cf", IssueID: "iss-1", AgentID: "ag-1", WorkspaceID: r.WorkspaceID,
+		RuntimeID: "rt-1",
+	}
+	extraEnv := []WorkerSecretEnvVar{
+		{Name: "CLOUDFLARE_API_TOKEN", SecretName: "multica-cloudflare", SecretKey: "api-token"},
+		{Name: "AWS_ACCESS_KEY_ID", SecretName: "multica-cloudflare", SecretKey: "access-key-id"},
+	}
+
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, extraEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := k.BatchV1().Jobs("multica").Get(context.Background(), jobName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Job missing: %v", err)
+	}
+	env := job.Spec.Template.Spec.Containers[0].Env
+	for _, want := range extraEnv {
+		var got *corev1.EnvVar
+		for i := range env {
+			if env[i].Name == want.Name {
+				got = &env[i]
+			}
+		}
+		if got == nil {
+			t.Fatalf("runtask missing %s env; env=%+v", want.Name, env)
+		}
+		if got.ValueFrom == nil || got.ValueFrom.SecretKeyRef == nil {
+			t.Fatalf("%s must be sourced from secretKeyRef; got %+v", want.Name, got)
+		}
+		ref := got.ValueFrom.SecretKeyRef
+		if ref.Name != want.SecretName || ref.Key != want.SecretKey {
+			t.Errorf("%s secretKeyRef = %s/%s, want %s/%s", want.Name, ref.Name, ref.Key, want.SecretName, want.SecretKey)
 		}
 	}
 }
@@ -299,7 +348,7 @@ func TestDispatchJob_WithRepoCache(t *testing.T) {
 		MountPath: "/repos",
 	}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, rc, GitHubTokenOptions{})
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, rc, GitHubTokenOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +437,7 @@ func TestDispatchJob_RepoCacheDisabled(t *testing.T) {
 		Repos:     []daemon.RepoData{{URL: "https://github.com/chrissnell/graywolf.git"}},
 	}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{Enabled: false}, GitHubTokenOptions{})
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{Enabled: false}, GitHubTokenOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +481,7 @@ func TestDispatchJob_WorkerServiceAccount(t *testing.T) {
 		RuntimeID: "rt-1",
 	}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{})
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +508,7 @@ func TestDispatchJob_NoWorkerServiceAccount(t *testing.T) {
 		RuntimeID: "rt-1",
 	}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{})
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,4 +517,3 @@ func TestDispatchJob_NoWorkerServiceAccount(t *testing.T) {
 		t.Errorf("ServiceAccountName: got %q, want empty (default SA fallback)", got)
 	}
 }
-

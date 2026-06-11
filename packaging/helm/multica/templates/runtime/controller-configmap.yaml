@@ -53,6 +53,18 @@ without K8S access" path.
       secretName: {{ .Values.runtime.githubTokenSecretName | quote }}
       secretKey: {{ .Values.runtime.githubTokenSecretKey | quote }}
     {{- end }}
+    {{- if .Values.runtime.cloudflare.enabled }}
+    # Cluster-wide Cloudflare R2 credentials injected into every worker Job pod
+    # as env vars (consumed by wrangler + rclone in the runtime image). The
+    # controller references the Secret by name only; it's created out-of-band
+    # or synced from Vault by the optional ExternalSecret (see values.yaml).
+    workerExtraEnv:
+    {{- range .Values.runtime.cloudflare.env }}
+      - name: {{ .name | quote }}
+        secretName: {{ $.Values.runtime.cloudflare.secretName | quote }}
+        secretKey: {{ .secretKey | quote }}
+    {{- end }}
+    {{- end }}
     {{- if .Values.runtime.claudeBroker.enabled }}
     # When the broker is enabled, the controller wires worker Jobs to inject
     # CLAUDE_CODE_OAUTH_TOKEN from the broker's access-token Secret via

@@ -85,6 +85,40 @@ in `~/kube/apps/multica/values.yaml`, then `helm upgrade --install`.
 The daemon authenticates via `MULTICA_TOKEN` env and reaches the backend at the
 in-cluster service DNS — it never touches the Cloudflare-Access-gated public host.
 
+### Cloudflare / R2 credentials for agents
+
+The runtime image ships `wrangler` (Cloudflare API + R2 bucket ops) and `rclone`
+(S3-compatible R2 object sync). Both authenticate purely from env vars, injected
+into worker/daemon pods from a K8s Secret — nothing is baked into the image (same
+model as `GH_TOKEN`). Off by default; enable under `runtime.cloudflare`:
+
+```yaml
+runtime:
+  cloudflare:
+    enabled: true
+    secretName: multica-cloudflare      # K8s Secret the keys come from
+    # env maps pod env var → Secret key (defaults shown):
+    # CLOUDFLARE_API_TOKEN ← api-token        (wrangler)
+    # AWS_ACCESS_KEY_ID    ← access-key-id     (rclone/aws S3 → R2)
+    # AWS_SECRET_ACCESS_KEY← secret-access-key
+    # AWS_ENDPOINT_URL_S3  ← s3-api-endpoint
+```
+
+Provide the Secret one of two ways:
+
+1. **Manually** — `kubectl -n multica create secret generic multica-cloudflare
+   --from-literal=api-token=… --from-literal=access-key-id=… …`
+2. **From Vault via External Secrets Operator** — set
+   `runtime.cloudflare.externalSecret.enabled=true` and point `secretStoreRef` /
+   `remotePath` at your Vault KV path (default `cloudflare/multica-agent`, keys
+   `api-token` / `access-key-id` / `secret-access-key` / `s3-api-endpoint`). The
+   chart renders an `ExternalSecret` that materializes `secretName` and keeps it
+   synced (ESO must be installed with a SecretStore that can read the path).
+
+`wrangler r2 bucket create <name>` then works inside any agent task; `rclone`
+reaches R2 via `--s3-provider Cloudflare --s3-env-auth` (or set `RCLONE_S3_*`
+vars by extending `env`).
+
 ### Modes
 
 - `daemon` (this plan): one long-lived daemon pod. Simple, laptop-free.

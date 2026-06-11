@@ -98,6 +98,47 @@ runtime:
   githubTokenSecretName: ""
   githubTokenSecretKey: token
 
+  # Optional cluster-wide Cloudflare credentials for agent pods. When enabled,
+  # the named K8s Secret's keys are injected as env vars into both daemon-mode
+  # and controller-mode worker pods, so `wrangler` (Cloudflare API / R2 bucket
+  # ops) and `rclone` (S3-compatible R2 object sync) — both baked into the
+  # runtime image — work out of the box.
+  #
+  # The Secret itself is NOT templated by this chart. Either create it by hand
+  # or, with External Secrets Operator installed, set externalSecret.enabled to
+  # have the chart render an ExternalSecret that syncs it from Vault.
+  #
+  # `env` maps each pod env var to a key in the Secret. Defaults assume a Vault
+  # KV entry with keys api-token / access-key-id / secret-access-key /
+  # s3-api-endpoint and wire the conventional names wrangler + the AWS S3 SDK
+  # (used by rclone via `--s3-env-auth` / aws CLI) read. Override `env` to
+  # rename or add variables (e.g. CLOUDFLARE_ACCOUNT_ID, RCLONE_S3_*).
+  cloudflare:
+    enabled: false
+    secretName: multica-cloudflare
+    env:
+      - name: CLOUDFLARE_API_TOKEN
+        secretKey: api-token
+      - name: AWS_ACCESS_KEY_ID
+        secretKey: access-key-id
+      - name: AWS_SECRET_ACCESS_KEY
+        secretKey: secret-access-key
+      - name: AWS_ENDPOINT_URL_S3
+        secretKey: s3-api-endpoint
+    # Optional: sync the Secret from Vault via External Secrets Operator.
+    # Requires ESO + a (Cluster)SecretStore that can read the Vault path. The
+    # chart renders an ExternalSecret that materializes `secretName` above.
+    externalSecret:
+      enabled: false
+      # Name of the (Cluster)SecretStore ESO uses to reach Vault.
+      secretStoreRef:
+        name: vault-backend
+        kind: ClusterSecretStore
+      # Vault KV v2 path holding the credential keys (no leading "secret/data/"
+      # mount prefix — ESO's vault provider adds it per its mountPath config).
+      remotePath: cloudflare/multica-agent
+      refreshInterval: 1h
+
   # The single watched workspace for the daemon-mode runtime.
   workspaceId: ""
 
