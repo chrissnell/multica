@@ -95,7 +95,7 @@ func run(logger *slog.Logger) error {
 			return nil
 		case <-poll.C:
 			for _, r := range registered {
-				dispatched, err := DispatchOnce(ctx, cli, k, cfg.Namespace, cfg.ImagePullSecret, r, cfg.ClaudeBroker, cfg.RepoCache, cfg.GitHubToken)
+				dispatched, err := DispatchOnce(ctx, cli, k, cfg.Namespace, cfg.ImagePullSecret, r, cfg.ClaudeBroker, cfg.RepoCache, cfg.GitHubToken, cfg.WorkerExtraEnv)
 				if err != nil {
 					logger.Warn("dispatch", "runtime", r.RuntimeID, "error", err)
 					continue

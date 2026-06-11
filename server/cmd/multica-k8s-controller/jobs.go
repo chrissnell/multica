@@ -109,7 +109,7 @@ func EnsurePVC(ctx context.Context, k kubernetes.Interface, namespace string, r 
 // repo-cache PVC read-only at rc.MountPath and a per-task gitconfig ConfigMap
 // at /home/multica/.gitconfig whose url.<base>.insteadOf rewrites turn the
 // agent's plain `git clone <origin-url>` into a sub-second local file:// clone.
-func DispatchJob(ctx context.Context, k kubernetes.Interface, namespace string, r Registered, t daemon.Task, imagePullSecret, pvc string, cb ClaudeBrokerOptions, rc RepoCacheOptions, gh GitHubTokenOptions) (string, error) {
+func DispatchJob(ctx context.Context, k kubernetes.Interface, namespace string, r Registered, t daemon.Task, imagePullSecret, pvc string, cb ClaudeBrokerOptions, rc RepoCacheOptions, gh GitHubTokenOptions, extraEnv []WorkerSecretEnvVar) (string, error) {
 	payload, err := json.Marshal(t)
 	if err != nil {
 		return "", fmt.Errorf("marshal task: %w", err)
@@ -237,6 +237,22 @@ func DispatchJob(ctx context.Context, k kubernetes.Interface, namespace string, 
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: gh.SecretName},
 					Key:                  gh.SecretKey,
+				},
+			},
+		})
+	}
+
+	// Cluster-wide extra credentials injected from K8s Secrets (e.g. the
+	// Cloudflare R2 keys consumed by wrangler/rclone). Each entry maps one
+	// env var to one Secret key via secretKeyRef — same shape as GH_TOKEN,
+	// just data-driven so new credentials need no controller change.
+	for _, e := range extraEnv {
+		runtaskEnv = append(runtaskEnv, corev1.EnvVar{
+			Name: e.Name,
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: e.SecretName},
+					Key:                  e.SecretKey,
 				},
 			},
 		})

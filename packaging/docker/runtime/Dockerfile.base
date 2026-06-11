@@ -42,6 +42,8 @@ ARG PNPM_VERSION
 ARG KUBECTL_VERSION
 ARG HELM_VERSION
 ARG GH_VERSION
+ARG WRANGLER_VERSION
+ARG RCLONE_VERSION
 # Android SDK/NDK component versions don't need a per-file pin (they rarely
 # bump). Defaults stay in-Dockerfile and can be overridden via --build-arg.
 ARG ANDROID_CMDLINE_TOOLS_VERSION=13114758
@@ -56,7 +58,9 @@ RUN test -n "$RUST_VERSION"             || { echo "RUST_VERSION build arg is req
     && test -n "$PNPM_VERSION"          || { echo "PNPM_VERSION build arg is required" >&2; exit 1; } \
     && test -n "$KUBECTL_VERSION"       || { echo "KUBECTL_VERSION build arg is required" >&2; exit 1; } \
     && test -n "$HELM_VERSION"          || { echo "HELM_VERSION build arg is required" >&2; exit 1; } \
-    && test -n "$GH_VERSION"            || { echo "GH_VERSION build arg is required" >&2; exit 1; }
+    && test -n "$GH_VERSION"            || { echo "GH_VERSION build arg is required" >&2; exit 1; } \
+    && test -n "$WRANGLER_VERSION"      || { echo "WRANGLER_VERSION build arg is required" >&2; exit 1; } \
+    && test -n "$RCLONE_VERSION"        || { echo "RCLONE_VERSION build arg is required" >&2; exit 1; }
 
 # Base apt packages: VCS, SSH, build/debug tooling, common dev utilities,
 # JDK 17 for Kotlin/Android Gradle Plugin 8.x.
@@ -201,6 +205,23 @@ RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_$
     && chmod +x /usr/local/bin/gh \
     && gh --version
 
+# ── Cloudflare tooling (wrangler + rclone) ────────────────────────────
+# wrangler drives the Cloudflare API (Workers, R2 bucket create/list, etc.);
+# rclone is the S3-compatible mover for R2 object sync. Both authenticate
+# purely from env vars injected from a K8s Secret at pod runtime — no creds
+# baked in here (same model as GH_TOKEN above). wrangler reads
+# CLOUDFLARE_API_TOKEN; rclone reads AWS_*/endpoint env or an --s3-* config.
+RUN npm install -g "wrangler@${WRANGLER_VERSION}" \
+    && npm cache clean --force \
+    && curl -fsSL "https://github.com/rclone/rclone/releases/download/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" \
+       -o /tmp/rclone.zip \
+    && unzip -q /tmp/rclone.zip -d /tmp \
+    && mv "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone \
+    && rm -rf /tmp/rclone.zip "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64" \
+    && chmod +x /usr/local/bin/rclone \
+    && wrangler --version \
+    && rclone --version | head -1
+
 # Non-root user the daemon and agents run as.
 RUN groupadd -g 1001 multica \
     && useradd -m -u 1001 -g 1001 -s /bin/bash multica
@@ -238,4 +259,6 @@ RUN multica version || true \
     && test -d "$ANDROID_NDK_HOME" \
     && kubectl version --client \
     && helm version --short \
-    && gh --version
+    && gh --version \
+    && wrangler --version \
+    && rclone version | head -1

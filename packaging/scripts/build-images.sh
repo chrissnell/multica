@@ -80,7 +80,7 @@ build_runtime() {
   # Toolchain pins for the runtime base. Each lives in its own text file
   # so future watcher workflows can bump them via PR (same pattern as
   # claude-code-version).
-  local rust_version kotlin_version golangci_lint_version ktlint_version pnpm_version kubectl_version helm_version gh_version
+  local rust_version kotlin_version golangci_lint_version ktlint_version pnpm_version kubectl_version helm_version gh_version wrangler_version rclone_version
   rust_version="$(read_pin rust-version)"
   kotlin_version="$(read_pin kotlin-version)"
   golangci_lint_version="$(read_pin golangci-lint-version)"
@@ -89,11 +89,14 @@ build_runtime() {
   kubectl_version="$(read_pin kubectl-version)"
   helm_version="$(read_pin helm-version)"
   gh_version="$(read_pin gh-version)"
+  wrangler_version="$(read_pin wrangler-version)"
+  rclone_version="$(read_pin rclone-version)"
 
   echo "==> Building $base (version=$version commit=$commit)"
   echo "    rust=$rust_version kotlin=$kotlin_version pnpm=$pnpm_version"
   echo "    golangci-lint=$golangci_lint_version ktlint=$ktlint_version"
   echo "    kubectl=$kubectl_version helm=$helm_version gh=$gh_version"
+  echo "    wrangler=$wrangler_version rclone=$rclone_version"
   docker build --platform "$platform" \
     --build-arg VERSION="$version" \
     --build-arg COMMIT="$commit" \
@@ -105,6 +108,8 @@ build_runtime() {
     --build-arg KUBECTL_VERSION="$kubectl_version" \
     --build-arg HELM_VERSION="$helm_version" \
     --build-arg GH_VERSION="$gh_version" \
+    --build-arg WRANGLER_VERSION="$wrangler_version" \
+    --build-arg RCLONE_VERSION="$rclone_version" \
     -f packaging/docker/runtime/Dockerfile.base \
     -t "$base" .
   if [[ "$push" -eq 1 ]]; then
