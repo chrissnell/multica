@@ -7,6 +7,7 @@ import { AppLink } from "../../navigation";
 import { useNavigation } from "../../navigation";
 import {
   Archive,
+  ArrowDown,
   Calendar,
   CalendarClock,
   CalendarDays,
@@ -722,6 +723,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // that: setState triggers the re-render that hands Virtuoso the element.
   const [scrollContainerEl, setScrollContainerEl] = useState<HTMLDivElement | null>(null);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  // "Scroll to bottom" affordance: shown only when the timeline is long enough
+  // to scroll and the user has scrolled meaningfully up from the bottom.
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
   // Per-session: which resolved threads the user has temporarily expanded.
   // Not persisted (matches Linear) — reload collapses everything back to bars.
@@ -1098,6 +1102,35 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     const fade = window.setTimeout(() => setHighlightedId(null), 2500);
     return () => clearTimeout(fade);
   }, [highlightCommentId, items, targetIdx, scrollContainerEl, replyToRoot, toggleResolvedExpand]);
+
+  // "Scroll to bottom" button visibility. The button is offered only once the
+  // timeline overflows its scroll pane (content taller than viewport) and the
+  // user has scrolled more than a viewport-ish gap up from the bottom — so it
+  // never flashes for short issues or tiny scroll jitters near the end.
+  useEffect(() => {
+    const el = scrollContainerEl;
+    if (!el) return;
+    const update = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      const overflows = el.scrollHeight - el.clientHeight > 240;
+      setShowScrollToBottom(overflows && distanceFromBottom > 240);
+    };
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    // New comments / images loading change scrollHeight without a scroll event.
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", update);
+      ro.disconnect();
+    };
+  }, [scrollContainerEl, items.length]);
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollContainerEl;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, [scrollContainerEl]);
 
   // Cmd-F / Ctrl-F on a virtualized timeline only searches what's mounted in
   // the viewport — off-screen comments are invisible to browser find-in-page.
@@ -2018,6 +2051,36 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                   draft key. */}
               <CommentInput key={id} issueId={id} onSubmit={submitComment} />
             </div>
+          </div>
+          {/* Floating "scroll to bottom" button. A zero-height sticky element
+              placed after the content sticks to the bottom of the scroll pane
+              while the user is scrolled up, then settles into flow at the very
+              bottom. pointer-events stay off the wrapper so the timeline below
+              it is still clickable. */}
+          <div className="pointer-events-none sticky bottom-4 z-20 mx-auto flex h-0 w-full max-w-4xl justify-end px-8">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="secondary"
+                    aria-label={t(($) => $.detail.scroll_to_bottom)}
+                    tabIndex={showScrollToBottom ? 0 : -1}
+                    onClick={scrollToBottom}
+                    className={cn(
+                      "absolute bottom-0 size-9 rounded-full border bg-background/90 shadow-md backdrop-blur transition-all duration-200 hover:bg-background",
+                      showScrollToBottom
+                        ? "pointer-events-auto opacity-100 translate-y-0"
+                        : "pointer-events-none opacity-0 translate-y-2",
+                    )}
+                  >
+                    <ArrowDown className="size-4" />
+                  </Button>
+                }
+              />
+              <TooltipContent side="left">{t(($) => $.detail.scroll_to_bottom)}</TooltipContent>
+            </Tooltip>
           </div>
         </div>
         </div>
