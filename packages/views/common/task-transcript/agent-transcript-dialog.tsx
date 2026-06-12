@@ -164,6 +164,29 @@ function formatElapsedMs(ms: number): string {
   return `${minutes}m ${secs}s`;
 }
 
+// Per-action timing wants sub-second resolution (tools can be fast), unlike the
+// run-level helpers above which floor to whole seconds.
+function formatTimingMs(ms: number): string {
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`;
+  const totalSec = ms / 1000;
+  if (totalSec < 10) return `${totalSec.toFixed(1)}s`;
+  if (totalSec < 60) return `${Math.round(totalSec)}s`;
+  const minutes = Math.floor(totalSec / 60);
+  const secs = Math.round(totalSec % 60);
+  return `${minutes}m ${secs}s`;
+}
+
+interface ActionTiming {
+  /** How long the action itself took (start → end / matching tool_result). */
+  durationMs?: number;
+  /** Gap since the previous action completed. */
+  intervalMs?: number;
+}
+
+// Only surface timing that carries signal — sub-second gaps and durations are
+// noise on a per-row basis and would clutter every line.
+const TIMING_MIN_MS = 1000;
+
 // ─── Main dialog ────────────────────────────────────────────────────────────
 
 export function AgentTranscriptDialog({
@@ -212,6 +235,24 @@ export function AgentTranscriptDialog({
     item.tool && (item.type === "tool_use" || item.type === "tool_result")
       ? `tool:${item.tool}`
       : item.type;
+
+  // Per-action timing, keyed by seq and derived from the full chronological
+  // timeline so gaps stay accurate even when a filter hides intervening rows.
+  // The first action's interval is measured from the run start when known.
+  const timingBySeq = useMemo(() => {
+    const map = new Map<number, ActionTiming>();
+    const startMs = task.started_at ? Date.parse(task.started_at) : NaN;
+    let prevEnd: number | undefined = Number.isNaN(startMs) ? undefined : startMs;
+    for (const item of items) {
+      const durationMs =
+        item.startTs !== undefined && item.endTs !== undefined ? item.endTs - item.startTs : undefined;
+      const intervalMs =
+        item.startTs !== undefined && prevEnd !== undefined ? item.startTs - prevEnd : undefined;
+      map.set(item.seq, { durationMs, intervalMs });
+      if (item.endTs !== undefined) prevEnd = item.endTs;
+    }
+    return map;
+  }, [items, task.started_at]);
 
   // Strict filter
   const filteredItems = useMemo(() => {
@@ -566,6 +607,7 @@ export function AgentTranscriptDialog({
                     else eventRefs.current.delete(item.seq);
                   }}
                   item={item}
+                  timing={timingBySeq.get(item.seq)}
                   isSelected={selectedSeq === item.seq}
                 />
               ))}
@@ -714,18 +756,23 @@ function TimelineBar({
 
 interface TranscriptEventRowProps {
   item: TimelineItem;
+  timing?: ActionTiming;
   isSelected: boolean;
 }
 
 const TranscriptEventRow = ({
   ref,
   item,
+  timing,
   isSelected,
 }: TranscriptEventRowProps & { ref?: React.Ref<HTMLDivElement> }) => {
   const [expanded, setExpanded] = useState(false);
   const color = getEventColor(item);
   const label = getEventLabel(item);
   const summary = getEventSummary(item);
+
+  const showInterval = timing?.intervalMs !== undefined && timing.intervalMs >= TIMING_MIN_MS;
+  const showDuration = timing?.durationMs !== undefined && timing.durationMs >= TIMING_MIN_MS;
 
   const hasDetail =
     (item.type === "tool_use" && item.input && Object.keys(item.input).length > 0) ||
@@ -777,6 +824,31 @@ const TranscriptEventRow = ({
               <span className="truncate">{summary || "(empty)"}</span>
             </div>
           </CollapsibleTrigger>
+
+          {/* Per-action timing: gap since the previous action (+interval) and
+              how long this action itself took (clock). Both hidden when
+              sub-second or unavailable (older backends omit timestamps). */}
+          {(showInterval || showDuration) && (
+            <div className="shrink-0 flex items-center gap-1.5 mt-0.5 tabular-nums">
+              {showInterval && (
+                <span
+                  title="Time since the previous action completed"
+                  className="text-[10px] text-muted-foreground/60"
+                >
+                  +{formatTimingMs(timing!.intervalMs!)}
+                </span>
+              )}
+              {showDuration && (
+                <span
+                  title="Duration of this action"
+                  className="inline-flex items-center gap-0.5 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground"
+                >
+                  <Clock className="h-2.5 w-2.5" />
+                  {formatTimingMs(timing!.durationMs!)}
+                </span>
+              )}
+            </div>
+          )}
 
           {/* Seq number / index */}
           <span className="shrink-0 text-[10px] text-muted-foreground/50 tabular-nums mt-1">
