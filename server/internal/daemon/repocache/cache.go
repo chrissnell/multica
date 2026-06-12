@@ -291,6 +291,12 @@ func gitCloneBare(url, dest string) error {
 // touches that symref on its own, so without this call an existing cache
 // would keep basing new worktrees on the original default branch forever
 // after the remote flipped.
+//
+// Finally, the bare's refs/heads/<default-branch> is advanced to track
+// refs/remotes/origin/<default-branch>. Worker-pod worktrees fetch from this
+// bare via git's default refspec (+refs/heads/*:refs/remotes/origin/*), so
+// without that advance they observe the clone-time snapshot indefinitely
+// even though the cache's refs/remotes/origin/* is fresh.
 func gitFetch(barePath string) error {
 	if err := ensureRemoteTrackingLayout(barePath); err != nil {
 		return fmt.Errorf("ensure refspec: %w", err)
@@ -308,7 +314,77 @@ func gitFetch(barePath string) error {
 	cmd.Env = gitEnv()
 
 	_ = cmd.Run()
+
+	// Advance the bare's refs/heads/<default> to the fresh
+	// refs/remotes/origin/<default> so worker pods see new commits via their
+	// standard `git fetch origin` from a worktree (which pulls the bare's
+	// refs/heads/*, not refs/remotes/origin/*). Non-fatal: failure here only
+	// loses the worker-visibility benefit; refs/remotes/origin/* is still
+	// fresh for any caller that goes through getRemoteDefaultBranch.
+	_ = advanceLocalDefaultBranch(barePath)
 	return nil
+}
+
+// advanceLocalDefaultBranch updates the bare repo's refs/heads/<default> to
+// match refs/remotes/origin/<default>. Only the default branch is advanced:
+// other refs/heads/* entries may be locked by worker-pod worktrees (created
+// via `git worktree add`), and update-ref would silently desync those
+// worktrees' HEAD/index. The default branch is conventionally never used
+// as a worktree-locked branch by CreateWorktree / CreateSharedClone — they
+// always create per-task branches off the default — but the worktree-lock
+// check below is a defensive safeguard in case that convention is broken.
+func advanceLocalDefaultBranch(barePath string) error {
+	originRef := getRemoteDefaultBranch(barePath)
+	if !strings.HasPrefix(originRef, "refs/remotes/origin/") {
+		// No origin-tracked default (cache mid-migration, ambiguous, or
+		// resolver fell through to a refs/heads/* legacy fallback). Nothing
+		// to advance.
+		return nil
+	}
+	branch := strings.TrimPrefix(originRef, "refs/remotes/origin/")
+	localRef := "refs/heads/" + branch
+
+	locked, err := worktreeLockedBranches(barePath)
+	if err != nil {
+		return fmt.Errorf("list worktrees: %w", err)
+	}
+	if locked[localRef] {
+		return nil
+	}
+
+	cmd := exec.Command("git", "-C", barePath, "update-ref", localRef, originRef)
+	cmd.Env = gitEnv()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("update-ref %s: %s: %w", localRef, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+// worktreeLockedBranches returns the set of refs/heads/* refs currently held
+// by an active worktree on the bare repo. Branches in this set must not be
+// updated via plain `update-ref`: git refuses to fetch into a worktree-locked
+// branch (the protection that motivates the modern refspec), but update-ref
+// has no such guard and would silently desync the worktree's HEAD/index.
+//
+// Parses `git worktree list --porcelain` blocks of the form:
+//
+//	worktree /path
+//	HEAD <sha>
+//	branch refs/heads/auto/claude-2.1.159
+func worktreeLockedBranches(barePath string) (map[string]bool, error) {
+	cmd := exec.Command("git", "-C", barePath, "worktree", "list", "--porcelain")
+
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	locked := make(map[string]bool)
+	for _, line := range strings.Split(string(out), "\n") {
+		if rest, ok := strings.CutPrefix(line, "branch "); ok {
+			locked[strings.TrimSpace(rest)] = true
+		}
+	}
+	return locked, nil
 }
 
 // runGitFetch is the raw `git fetch origin` wrapper. Callers should go through

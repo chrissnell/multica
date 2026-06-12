@@ -1101,6 +1101,100 @@ func TestGitFetchRefreshesOriginHeadAfterDefaultChange(t *testing.T) {
 	}
 }
 
+// TestGitFetchAdvancesLocalDefaultBranch verifies that after `gitFetch`,
+// the bare's refs/heads/<default-branch> matches refs/remotes/origin/<default>.
+//
+// Worker-pod worktrees fetch from the bare via git's default refspec
+// (+refs/heads/*:refs/remotes/origin/*), so without this advance they observe
+// the original clone-time snapshot in refs/heads/* indefinitely — even after
+// the cache's refs/remotes/origin/* is fresh.
+//
+// Reproduces the failure mode where agents reported "origin/main still at
+// <old-sha>" after a PR merge: repocache had fetched the new commit into
+// refs/remotes/origin/main, but refs/heads/main was frozen at clone time, so
+// `git fetch origin` from the worktree returned stale data.
+func TestGitFetchAdvancesLocalDefaultBranch(t *testing.T) {
+	t.Parallel()
+	sourceRepo := createTestRepo(t)
+	initialBranch := currentBranchName(t, sourceRepo)
+	cacheRoot := t.TempDir()
+	cache := New(cacheRoot, testLogger())
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: sourceRepo}}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	barePath := cache.Lookup("ws-1", sourceRepo)
+
+	// Advance source. refs/clone-time/* on the bare have not seen this
+	// commit yet — that's the whole point of the test.
+	addEmptyCommit(t, sourceRepo, "post-sync")
+	sourceHead := gitHead(t, sourceRepo)
+
+	if err := gitFetch(barePath); err != nil {
+		t.Fatalf("gitFetch failed: %v", err)
+	}
+
+	// Worker-visibility contract: refs/heads/<default> must equal upstream HEAD.
+	// This is what worker pods reading via the standard fetch refspec see.
+	localDefaultRef := "refs/heads/" + initialBranch
+	localHead := gitRefCommit(t, barePath, localDefaultRef)
+	if localHead != sourceHead {
+		t.Fatalf("%s = %q, want %q (worker pods see this via standard fetch refspec)",
+			localDefaultRef, localHead, sourceHead)
+	}
+
+	// Cross-check: refs/remotes/origin/<default> matches too. If this drifted
+	// the failure would be in runGitFetch, not the advance step — separate bug.
+	originRef := "refs/remotes/origin/" + initialBranch
+	originHead := gitRefCommit(t, barePath, originRef)
+	if originHead != sourceHead {
+		t.Fatalf("%s = %q, want %q", originRef, originHead, sourceHead)
+	}
+}
+
+// TestGitFetchSkipsAdvanceWhenDefaultBranchIsWorktreeLocked verifies the
+// worktree-lock guard in advanceLocalDefaultBranch. If something has the
+// default branch checked out as an active worktree (uncommon — workers
+// branch off the default rather than locking it), advance must skip the
+// update-ref to avoid silently desyncing that worktree's HEAD/index.
+func TestGitFetchSkipsAdvanceWhenDefaultBranchIsWorktreeLocked(t *testing.T) {
+	t.Parallel()
+	sourceRepo := createTestRepo(t)
+	initialBranch := currentBranchName(t, sourceRepo)
+	cacheRoot := t.TempDir()
+	cache := New(cacheRoot, testLogger())
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: sourceRepo}}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	barePath := cache.Lookup("ws-1", sourceRepo)
+	frozenSHA := gitRefCommit(t, barePath, "refs/heads/"+initialBranch)
+
+	// Lock the default branch via a worktree. This simulates the rare case
+	// where a worker pod has the default branch directly checked out.
+	worktreeDir := filepath.Join(t.TempDir(), "lock-default")
+	cmd := exec.Command("git", "-C", barePath, "worktree", "add", worktreeDir, initialBranch)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("worktree add %s: %s: %v", initialBranch, out, err)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("git", "-C", barePath, "worktree", "remove", "--force", worktreeDir).Run()
+	})
+
+	// Advance source so refs/remotes/origin/<default> moves. refs/heads/<default>
+	// would normally be advanced too — but the worktree lock should block it.
+	addEmptyCommit(t, sourceRepo, "post-lock")
+	if err := gitFetch(barePath); err != nil {
+		t.Fatalf("gitFetch failed: %v", err)
+	}
+
+	// Defensive contract: refs/heads/<default> must NOT have moved while the
+	// worktree lock is held.
+	after := gitRefCommit(t, barePath, "refs/heads/"+initialBranch)
+	if after != frozenSHA {
+		t.Fatalf("refs/heads/%s advanced to %q despite worktree lock; want frozen at %q",
+			initialBranch, after, frozenSHA)
+	}
+}
+
 // TestGetRemoteDefaultBranchUsesBareHeadHintForCustomDefault verifies step 3
 // of the resolver: when the cache has a non-standard default branch name
 // (trunk, develop, …) and `git remote set-head origin --auto` didn't
