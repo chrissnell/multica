@@ -152,6 +152,7 @@ func DispatchJob(ctx context.Context, k kubernetes.Interface, namespace string, 
 	mode := int32(0o400)
 	allowPrivEsc := false
 	seccompRuntimeDefault := corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}
+	fsGroupOnRootMismatch := corev1.FSGroupChangeOnRootMismatch
 	containerSC := &corev1.SecurityContext{
 		AllowPrivilegeEscalation: &allowPrivEsc,
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
@@ -319,11 +320,12 @@ func DispatchJob(ctx context.Context, k kubernetes.Interface, namespace string, 
 					ServiceAccountName: r.ServiceAccountName,
 					ImagePullSecrets:   []corev1.LocalObjectReference{{Name: imagePullSecret}},
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot:   &nonRoot,
-						RunAsUser:      &uid,
-						RunAsGroup:     &gid,
-						FSGroup:        &gid,
-						SeccompProfile: &seccompRuntimeDefault,
+						RunAsNonRoot:        &nonRoot,
+						RunAsUser:           &uid,
+						RunAsGroup:          &gid,
+						FSGroup:             &gid,
+						FSGroupChangePolicy: &fsGroupOnRootMismatch,
+						SeccompProfile:      &seccompRuntimeDefault,
 					},
 					InitContainers: initContainers,
 					Containers: []corev1.Container{{
