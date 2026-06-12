@@ -8,15 +8,37 @@
 # Usage:
 #   ./build-images.sh [--no-push] [--registry REG] [--tag TAG] [image…]
 #
-# Defaults: registry=registry.chrissnell.com/multica, tag=$(git rev-parse --short HEAD).
+# Defaults: registry=registry.chrissnell.com/multica, tag=$(cat packaging/image-tag).
 # Override with --registry ghcr.io/chrissnell to use the old public registry.
 # With no image args, builds backend/web/postgres/controller. Pass `runtime`
 # explicitly to build the runtime base + runtime-claude images (Plan C).
+#
+# Tag policy:
+#   - packaging/image-tag is the single source of truth for the canonical
+#     Harbor tag (vX.Y.Z-mkN). Bump it via `make bump-images` before pushing
+#     a new official release. See CLAUDE.md → "Self-hosted image tags".
+#   - For throwaway sandbox builds (testing on a branch without touching the
+#     mk-series), override with --tag wip-<whatever> or TAG=wip-<whatever>.
 
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# Read a version pin from packaging/<name>. Strips whitespace and fails if
+# the file is missing or empty — an unpinned build should fail loudly, not
+# silently resolve to "latest".
+read_pin() {
+  local name="$1"
+  local file="$ROOT/packaging/$name"
+  [ -f "$file" ] || { echo "missing pin file: packaging/$name" >&2; exit 1; }
+  local value
+  value="$(tr -d '[:space:]' < "$file")"
+  [ -n "$value" ] || { echo "packaging/$name is empty" >&2; exit 1; }
+  printf '%s' "$value"
+}
+
 REGISTRY="${REGISTRY:-registry.chrissnell.com/multica}"
-TAG="${TAG:-$(git rev-parse --short HEAD)}"
+TAG="${TAG:-$(read_pin image-tag)}"
 # K8s nodes are amd64; default to that even when building on Apple Silicon.
 PLATFORM="${PLATFORM:-linux/amd64}"
 PUSH=1
@@ -35,21 +57,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
-
-# Read a version pin from packaging/<name>. Strips whitespace and fails if
-# the file is missing or empty — an unpinned build should fail loudly, not
-# silently resolve to "latest".
-read_pin() {
-  local name="$1"
-  local file="$ROOT/packaging/$name"
-  [ -f "$file" ] || { echo "missing pin file: packaging/$name" >&2; exit 1; }
-  local value
-  value="$(tr -d '[:space:]' < "$file")"
-  [ -n "$value" ] || { echo "packaging/$name is empty" >&2; exit 1; }
-  printf '%s' "$value"
-}
 
 declare -A IMAGES=(
   [backend]="Dockerfile"
