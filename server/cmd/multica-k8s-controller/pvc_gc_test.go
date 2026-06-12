@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -19,13 +20,22 @@ import (
 )
 
 // gcCheckServer returns a daemon client whose issue gc-check responds with the
-// status mapped per issue id. Unknown ids 404 like a deleted/inaccessible issue.
+// status mapped per issue id. updated_at is reported an hour in the past so the
+// cleanup grace period is satisfied; use gcCheckServerAt to control the age.
+// Unknown ids 404 like a deleted/inaccessible issue.
 func gcCheckServer(t *testing.T, statuses map[string]string) *daemon.Client {
+	return gcCheckServerAt(t, statuses, -time.Hour)
+}
+
+// gcCheckServerAt is gcCheckServer with an explicit updated_at offset from now,
+// letting a test place a terminal issue inside or outside the cleanup grace.
+func gcCheckServerAt(t *testing.T, statuses map[string]string, age time.Duration) *daemon.Client {
 	t.Helper()
+	updatedAt := time.Now().Add(age).UTC().Format(time.RFC3339)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for id, st := range statuses {
 			if strings.Contains(r.URL.Path, id) {
-				_, _ = io.WriteString(w, fmt.Sprintf(`{"status":%q,"updated_at":"2026-06-12T00:00:00Z"}`, st))
+				_, _ = io.WriteString(w, fmt.Sprintf(`{"status":%q,"updated_at":%q}`, st, updatedAt))
 				return
 			}
 		}
@@ -83,6 +93,21 @@ func TestSweepDonePVCs_DeletesTerminalIssuePVCs(t *testing.T) {
 	}
 	if !pvcExists(t, k, "wd-live") {
 		t.Error("expected in_progress-issue PVC to be retained")
+	}
+}
+
+func TestSweepDonePVCs_KeepsRecentlyTerminalPVC(t *testing.T) {
+	// Done, but only just now — inside the cleanup grace, so a follow-up task
+	// that dispatches in this window can't have its volume pulled out.
+	cli := gcCheckServerAt(t, map[string]string{"issDONE": "done"}, -10*time.Second)
+	k := fake.NewSimpleClientset(issuePVC("wd-done", "issDONE"))
+
+	if err := SweepDonePVCs(context.Background(), cli, k, "multica"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !pvcExists(t, k, "wd-done") {
+		t.Error("expected recently-terminal PVC to be retained within the grace period")
 	}
 }
 

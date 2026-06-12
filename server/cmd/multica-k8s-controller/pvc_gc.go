@@ -3,12 +3,21 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/daemon"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
+
+// pvcCleanupGrace is how long an issue must have been terminal before its PVC
+// is reclaimed. The live-Job gate already covers the running worker pod, but a
+// follow-up task can be claimed and dispatched against a just-completed issue
+// in the gap between this sweep listing Jobs and issuing the Delete; a short
+// grace on the issue's updated_at keeps that window from racing a brand-new
+// Job onto a deleted volume. Kept small so cleanup is still prompt.
+const pvcCleanupGrace = 2 * time.Minute
 
 // SweepDonePVCs reclaims per-issue workdir PVCs once their issue reaches a
 // terminal state. EnsurePVC creates one PVC per (workspace, agent, issue) and
@@ -21,7 +30,9 @@ import (
 // still running, and deleting a mounted PVC just leaves it wedged in
 // Terminating behind the kubelet's pvc-protection finalizer. Gating on the
 // absence of a live Job keeps deletion to genuinely idle PVCs; the next sweep
-// (~30s later) reclaims it once the Job is gone.
+// (~30s later) reclaims it once the Job is gone. A short pvcCleanupGrace on the
+// issue's updated_at backstops the gap between listing Jobs and the Delete,
+// where a follow-up task could otherwise dispatch a new Job onto the volume.
 //
 // Only issue-scoped PVCs carry a non-empty issue-id label — chat-session,
 // autopilot, and per-task PVCs are skipped here by construction.
@@ -51,6 +62,9 @@ func SweepDonePVCs(ctx context.Context, cli *daemon.Client, k kubernetes.Interfa
 			continue
 		}
 		if status.Status != "done" && status.Status != "cancelled" {
+			continue
+		}
+		if time.Since(status.UpdatedAt) < pvcCleanupGrace {
 			continue
 		}
 		_ = k.CoreV1().PersistentVolumeClaims(namespace).Delete(ctx, p.Name, metav1.DeleteOptions{})
