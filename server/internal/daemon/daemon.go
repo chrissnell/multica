@@ -832,8 +832,9 @@ func (d *Daemon) workspaceLastRepoSyncErr(workspaceID string) string {
 }
 
 // workspaceCoAuthoredByEnabled returns whether the Co-authored-by hook should
-// be installed for the given workspace. Defaults to true when either setting
-// is absent (new workspaces, older servers that don't send settings).
+// be installed for the given workspace. Defaults to false (off) when the
+// setting is absent — the trailer is opt-in and never appears unless the
+// workspace explicitly enables it.
 //
 // The hook is gated by BOTH the GitHub master switch (`github_enabled`) and
 // the dedicated co-author switch (`co_authored_by_enabled`) so flipping the
@@ -844,7 +845,7 @@ func (d *Daemon) workspaceCoAuthoredByEnabled(workspaceID string) bool {
 	defer d.mu.Unlock()
 	ws, ok := d.workspaces[workspaceID]
 	if !ok {
-		return true // default: enabled
+		return false // default: disabled
 	}
 	return coAuthoredByEnabledFromSettings(ws.settings)
 }
@@ -853,26 +854,27 @@ func (d *Daemon) workspaceCoAuthoredByEnabled(workspaceID string) bool {
 // workspace settings payload. It is the single decision point shared by the
 // daemon-mode gate (which reads synced settings) and the controller-mode gate
 // (which fetches settings live), so both honor the identical contract: the
-// GitHub master switch (`github_enabled`=false) forces the hook off, an
-// explicit `co_authored_by_enabled`=false turns it off, and an absent or
-// malformed payload keeps the historical default-on behavior (RFC MUL-2414
-// §4.8).
+// trailer is opt-in and defaults to OFF. It is installed only when the
+// workspace explicitly sets `co_authored_by_enabled`=true; the GitHub master
+// switch (`github_enabled`=false) still forces it off, and an absent or
+// malformed payload resolves to off so attribution can never reappear by
+// accident.
 func coAuthoredByEnabledFromSettings(settings json.RawMessage) bool {
 	if len(settings) == 0 {
-		return true // default: enabled
+		return false // default: disabled
 	}
 	var s struct {
 		GitHubEnabled       *bool `json:"github_enabled"`
 		CoAuthoredByEnabled *bool `json:"co_authored_by_enabled"`
 	}
 	if err := json.Unmarshal(settings, &s); err != nil {
-		return true // default: enabled when payload is malformed
+		return false // default: disabled when payload is malformed
 	}
 	if s.GitHubEnabled != nil && !*s.GitHubEnabled {
 		return false
 	}
 	if s.CoAuthoredByEnabled == nil {
-		return true // default: enabled
+		return false // default: disabled
 	}
 	return *s.CoAuthoredByEnabled
 }
