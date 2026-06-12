@@ -74,6 +74,9 @@ func run(logger *slog.Logger) error {
 				if err := SweepFailedJobs(ctx, cli, k, cfg.Namespace); err != nil {
 					logger.Warn("sweep failed jobs", "error", err)
 				}
+				if err := SweepDonePVCs(ctx, cli, k, cfg.Namespace); err != nil {
+					logger.Warn("sweep done pvcs", "error", err)
+				}
 			}
 		}
 	}()
