@@ -631,6 +631,69 @@ func TestClaudeExecuteSurfacesStderrWhenChildExitsEarly(t *testing.T) {
 	}
 }
 
+// TestClaudeExecuteClearsSessionIDOnNoConversationFound covers the case where
+// --resume points at a session whose jsonl file no longer exists on disk.
+// claude echoes the requested session id back in its result message even
+// though no conversation was loaded — so resolveSessionID's "emitted differs
+// from requested" guard does NOT trigger. Without the dedicated stderr-marker
+// check, Result.SessionID would equal the dead session id and the daemon's
+// retry-with-fresh-session fallback would silently skip the retry. Assert
+// SessionID is cleared so the fallback can fire.
+func TestClaudeExecuteClearsSessionIDOnNoConversationFound(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	const deadSessionID = "70049997-95e5-4bf9-81a6-6deed28ad584"
+	fakePath := filepath.Join(t.TempDir(), "claude")
+	// Fake claude:
+	//   - drains stdin so writeClaudeInput succeeds
+	//   - prints the canonical "No conversation found" marker to stderr
+	//   - emits a stream-json result message echoing the requested session id
+	//     back, with is_error=true (this is what real claude does today)
+	//   - exits 0 (the stream-json is the success signal)
+	script := "#!/bin/sh\n" +
+		"cat >/dev/null\n" +
+		"echo \"No conversation found with session ID: " + deadSessionID + "\" >&2\n" +
+		"printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"error\",\"is_error\":true,\"session_id\":\"" + deadSessionID + "\",\"result\":\"\"}'\n"
+	writeTestExecutable(t, fakePath, []byte(script))
+
+	backend, err := New("claude", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new claude backend: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{
+		Timeout:         5 * time.Second,
+		ResumeSessionID: deadSessionID,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	select {
+	case result, ok := <-session.Result:
+		if !ok {
+			t.Fatal("result channel closed without a value")
+		}
+		if result.Status != "failed" {
+			t.Fatalf("expected status=failed, got %q", result.Status)
+		}
+		if result.SessionID != "" {
+			t.Fatalf("expected SessionID to be cleared so the daemon retry-fresh fallback can fire; got %q", result.SessionID)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+}
+
 func TestClaudeExecuteRecordsResultModelUsage(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {

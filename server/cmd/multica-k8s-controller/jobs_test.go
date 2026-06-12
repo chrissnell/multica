@@ -312,6 +312,67 @@ func hasVolume(vs []corev1.Volume, name string) bool {
 	return false
 }
 
+// TestDispatchJob_PersistsClaudeProjects asserts that DispatchJob mounts the
+// work PVC a second time, with SubPath "claude-projects", at the location
+// where claude stores per-conversation jsonl files. Without this mount,
+// /home/multica/.claude is an emptyDir that vanishes when the worker Pod
+// ends, every follow-up task fails `claude --resume <session-id>`, and the
+// daemon never recovers session continuity across tasks.
+func TestDispatchJob_PersistsClaudeProjects(t *testing.T) {
+	k := fake.NewSimpleClientset()
+	r := Registered{
+		WorkspaceID: "ws-1", AgentName: "Lambda", Provider: "claude",
+		Image:   "registry/multica-runtime-claude:v0.3.0-mk1",
+		PVCSize: "5Gi",
+	}
+	task := daemon.Task{
+		ID: "task-resume", IssueID: "iss-1", AgentID: "ag-1", WorkspaceID: r.WorkspaceID,
+		RuntimeID: "rt-1",
+	}
+
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := k.BatchV1().Jobs("multica").Get(context.Background(), jobName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Job missing: %v", err)
+	}
+	runtask := job.Spec.Template.Spec.Containers[0]
+
+	// Find both mounts of the work volume; one is the workdir at /work, the
+	// other is the claude session-store reuse.
+	var workMount, projectsMount *corev1.VolumeMount
+	for i := range runtask.VolumeMounts {
+		m := &runtask.VolumeMounts[i]
+		if m.Name != "work" {
+			continue
+		}
+		switch m.MountPath {
+		case "/work":
+			workMount = m
+		case "/home/multica/.claude/projects":
+			projectsMount = m
+		}
+	}
+	if workMount == nil {
+		t.Fatalf("work PVC must remain mounted at /work; mounts=%+v", runtask.VolumeMounts)
+	}
+	if workMount.SubPath != "" {
+		t.Errorf("/work mount must have empty SubPath; got %q", workMount.SubPath)
+	}
+	if projectsMount == nil {
+		t.Fatalf("work PVC must also be mounted at /home/multica/.claude/projects so session files persist across worker pods; mounts=%+v", runtask.VolumeMounts)
+	}
+	if projectsMount.SubPath != "claude-projects" {
+		t.Errorf("projects mount SubPath = %q, want \"claude-projects\"", projectsMount.SubPath)
+	}
+	// The mount must be writable — claude writes its own jsonl files.
+	if projectsMount.ReadOnly {
+		t.Errorf("projects mount must not be ReadOnly; claude writes session files into it")
+	}
+}
+
 func hasVolumeMount(ms []corev1.VolumeMount, name string) *corev1.VolumeMount {
 	for i := range ms {
 		if ms[i].Name == name {
