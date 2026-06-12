@@ -77,6 +77,11 @@ func run(logger *slog.Logger) error {
 				if err := SweepDonePVCs(ctx, cli, k, cfg.Namespace); err != nil {
 					logger.Warn("sweep done pvcs", "error", err)
 				}
+				if n, err := SweepTaskPVCs(ctx, k, cfg.Namespace); err != nil {
+					logger.Warn("sweep task pvcs", "error", err)
+				} else if n > 0 {
+					logger.Info("reclaimed task pvcs", "count", n)
+				}
 			}
 		}
 	}()
