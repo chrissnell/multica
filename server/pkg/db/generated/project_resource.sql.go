@@ -232,14 +232,19 @@ SELECT (resource_ref->>'url')::text AS url
 FROM project_resource
 WHERE workspace_id = $1
   AND resource_type = 'github_repo'
-  AND (resource_ref->>'url') IS NOT NULL
+  AND jsonb_typeof(resource_ref->'url') = 'string'
 `
 
 // Returns the URLs of every github_repo project resource attached to any
 // project in the workspace. Used by the daemon repo endpoints to merge
 // project-attached repos into the workspace-level repo list so the
-// repocache picks them up automatically. Caller must normalize (trim,
-// dedupe, drop empty) since duplicates across projects are expected.
+// repocache picks them up automatically.
+//
+// jsonb_typeof rejects non-string url values (e.g. {"url": 123} or
+// {"url": null}) at the SQL boundary so a malformed row can't leak a
+// non-URL string into the repocache. Empty / whitespace-only strings are
+// still possible from this query and are dropped by the Go normalizer
+// alongside the cross-project dedupe.
 func (q *Queries) ListWorkspaceGithubRepoURLs(ctx context.Context, workspaceID pgtype.UUID) ([]string, error) {
 	rows, err := q.db.Query(ctx, listWorkspaceGithubRepoURLs, workspaceID)
 	if err != nil {
