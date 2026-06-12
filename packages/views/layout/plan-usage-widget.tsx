@@ -30,12 +30,7 @@ function PlanUsageBar({
       : undefined;
 
   return (
-    <Progress
-      value={pct}
-      title={title}
-      aria-label={label}
-      className="flex-col gap-1"
-    >
+    <Progress value={pct} title={title} className="flex-col gap-1">
       <div className="flex w-full items-center justify-between gap-2">
         <ProgressLabel className="text-xs font-normal text-muted-foreground">
           {label}

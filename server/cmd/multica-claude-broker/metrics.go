@@ -12,10 +12,11 @@ import (
 // label cardinality stays bounded and typos don't accidentally create new
 // label values.
 const (
-	outcomeOk      = "ok"
-	outcomeError   = "error"
-	outcomeSkipped = "skipped"
-	outcomeStale   = "stale"
+	outcomeOk          = "ok"
+	outcomeError       = "error"
+	outcomeSkipped     = "skipped"
+	outcomeStale       = "stale"
+	outcomeRateLimited = "rate_limited"
 )
 
 var (

@@ -53,7 +53,7 @@ func (p *UsagePoller) tick(ctx context.Context) {
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrUsageRateLimited):
-			usagePollTotal.WithLabelValues("rate_limited").Inc()
+			usagePollTotal.WithLabelValues(outcomeRateLimited).Inc()
 			p.broker.logger.Warn("usage poll rate-limited; serving last snapshot")
 		default:
 			usagePollTotal.WithLabelValues(outcomeError).Inc()
