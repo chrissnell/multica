@@ -227,6 +227,39 @@ func (q *Queries) ListProjectResourcesForProjects(ctx context.Context, projectId
 	return items, nil
 }
 
+const listWorkspaceGithubRepoURLs = `-- name: ListWorkspaceGithubRepoURLs :many
+SELECT (resource_ref->>'url')::text AS url
+FROM project_resource
+WHERE workspace_id = $1
+  AND resource_type = 'github_repo'
+  AND (resource_ref->>'url') IS NOT NULL
+`
+
+// Returns the URLs of every github_repo project resource attached to any
+// project in the workspace. Used by the daemon repo endpoints to merge
+// project-attached repos into the workspace-level repo list so the
+// repocache picks them up automatically. Caller must normalize (trim,
+// dedupe, drop empty) since duplicates across projects are expected.
+func (q *Queries) ListWorkspaceGithubRepoURLs(ctx context.Context, workspaceID pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceGithubRepoURLs, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var url string
+		if err := rows.Scan(&url); err != nil {
+			return nil, err
+		}
+		items = append(items, url)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateProjectResource = `-- name: UpdateProjectResource :one
 UPDATE project_resource
 SET resource_ref = $2,

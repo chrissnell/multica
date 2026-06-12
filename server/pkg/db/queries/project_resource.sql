@@ -8,6 +8,18 @@ SELECT * FROM project_resource
 WHERE project_id = ANY(sqlc.arg('project_ids')::uuid[])
 ORDER BY project_id, position ASC, created_at ASC;
 
+-- name: ListWorkspaceGithubRepoURLs :many
+-- Returns the URLs of every github_repo project resource attached to any
+-- project in the workspace. Used by the daemon repo endpoints to merge
+-- project-attached repos into the workspace-level repo list so the
+-- repocache picks them up automatically. Caller must normalize (trim,
+-- dedupe, drop empty) since duplicates across projects are expected.
+SELECT (resource_ref->>'url')::text AS url
+FROM project_resource
+WHERE workspace_id = $1
+  AND resource_type = 'github_repo'
+  AND (resource_ref->>'url') IS NOT NULL;
+
 -- name: GetProjectResource :one
 SELECT * FROM project_resource
 WHERE id = $1;
