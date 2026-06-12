@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree db-up db-down db-reset selfhost selfhost-build selfhost-stop
+.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree db-up db-down db-reset selfhost selfhost-build selfhost-stop bump-images print-image-tag print-next-image-tag
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -303,6 +303,24 @@ migrate-down: ## Create the target DB if needed, then roll back database migrati
 
 sqlc: ## Regenerate sqlc code
 	cd server && sqlc generate
+
+# Packaging — self-hosted Harbor images
+##@ Packaging
+
+print-image-tag: ## Print the current Multica image tag from packaging/image-tag
+	@cat packaging/image-tag
+
+print-next-image-tag: ## Print what `make bump-images` would write, without writing it
+	@./packaging/scripts/bump-image-tag.sh --print
+
+bump-images: ## Increment the -mkN suffix in packaging/image-tag (vX.Y.Z-mkN → -mk(N+1)). See CLAUDE.md → "Self-hosted image tags".
+	@./packaging/scripts/bump-image-tag.sh
+	@echo
+	@echo "Next steps:"
+	@echo "  1. git add packaging/image-tag && git commit -m 'chore(images): bump to $$(cat packaging/image-tag)'"
+	@echo "  2. ./packaging/scripts/build-images.sh    # builds + pushes all images at $$(cat packaging/image-tag)"
+	@echo "  3. Update ~/kube/apps/multica/values.yaml image.tag → $$(cat packaging/image-tag)"
+	@echo "  4. helm upgrade --install multica packaging/helm/multica/ -n multica -f ~/kube/apps/multica/values.yaml"
 
 # Cleanup
 ##@ Cleanup

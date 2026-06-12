@@ -417,6 +417,52 @@ make check
 
 By default, bump the patch version each release (e.g. `v0.1.12` → `v0.1.13`), unless the user specifies a specific version.
 
+## Self-hosted image tags (Harbor)
+
+The CLI release flow above is for the GitHub `v0.x.x` semver line. It is **not** the production deploy tag for the self-hosted Kubernetes stack. Those images (`registry.chrissnell.com/multica/multica-{backend,web,postgres,controller,claude-broker,repocache,runtime-base,runtime-claude}`) all share a single tag of the form `vX.Y.Z-mkN` and are built/pushed manually from a developer workstation.
+
+The contention problem we kept hitting: with no in-repo source of truth for `mkN`, two parallel feature branches would both pick the next number, both push to Harbor under the same tag, and stomp on each other. Whoever deployed second silently overwrote the first.
+
+**Source of truth:** [`packaging/image-tag`](packaging/image-tag). One line, the current Harbor tag. Every image moves together — there is no per-subsystem tag.
+
+### Workflow — pushing a new release
+
+```bash
+make bump-images                          # vX.Y.Z-mkN → vX.Y.Z-mk(N+1) in packaging/image-tag
+git add packaging/image-tag
+git commit -m "chore(images): bump to $(cat packaging/image-tag)"
+./packaging/scripts/build-images.sh       # reads pin, builds + pushes all platform images
+./packaging/scripts/build-images.sh runtime  # only when the runtime base / claude image changed
+# Update ~/kube/apps/multica/values.yaml: image.tag → cat packaging/image-tag
+helm upgrade --install multica packaging/helm/multica/ -n multica -f ~/kube/apps/multica/values.yaml
+git tag $(cat packaging/image-tag) && git push origin $(cat packaging/image-tag)   # optional but recommended
+```
+
+`make print-image-tag` shows the current pin. `make print-next-image-tag` shows what `bump-images` would write without writing it.
+
+### Deconflicting parallel branches
+
+The bump commit IS the lock. If two branches both run `make bump-images` against the same base (say both produce `v0.4.0-mk6`):
+
+- **Whoever merges first** wins. Their bump commit lands on `main`, their build at `v0.4.0-mk6` is canonical.
+- **The loser rebases**, runs `make bump-images` again (now produces `v0.4.0-mk7`), re-runs `build-images.sh`, and updates their PR. The mk6 images they previously pushed are dead — replace them or leave them in Harbor's history; do not deploy them.
+- **Never edit `packaging/image-tag` by hand to "fix" a conflict.** Re-run the bump script — it's the only thing that guarantees the suffix matches the actual increment.
+
+### Sandbox / WIP builds (no contention)
+
+When testing on a branch without spending an mk number, pass an explicit tag — the pin file is left untouched and Harbor's mk-series is unaffected:
+
+```bash
+./packaging/scripts/build-images.sh --tag wip-$(whoami)-$(git rev-parse --short HEAD)
+# helm upgrade --set image.tag=wip-…  (in a non-prod cluster)
+```
+
+The `wip-*` namespace is purely a convention — anything that isn't `vX.Y.Z-mkN` is sandbox by definition.
+
+### When to bump the base version (e.g. `v0.4.0` → `v0.5.0`)
+
+The base is bumped when the CLI semver line bumps (see *CLI Release* above). Use `./packaging/scripts/bump-image-tag.sh --base v0.5.0` to reset the suffix to `-mk1` against the new base. Most days you do not touch the base — every bump is an mk.
+
 ## Multi-tenancy
 
 All queries filter by `workspace_id`. Membership checks gate access. `X-Workspace-ID` header routes requests to the correct workspace.
