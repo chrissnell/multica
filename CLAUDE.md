@@ -446,7 +446,7 @@ gh pr create --repo chrissnell/multica --base main --head $(git branch --show-cu
 
 Wait for the PR to merge before continuing. The build itself can run from any branch — only the bump's claim on the `mk` number requires the merge.
 
-**2. Build + push.** Skip `postgres` (intentionally pinned to `v0.4.0-mk3` in `~/kube/apps/multica/values.yaml` to avoid bouncing the stateful pod for a no-op rebuild). Skip `runtime` unless toolchain pins (`packaging/rust-version`, `packaging/go-version`, `packaging/claude-code-version`, etc.) actually changed — runtime has its own lifecycle and a rebuild may pick up unrelated WIP pins.
+**2. Build + push.** Skip `postgres` (intentionally pinned to `v0.4.0-mk3` in `deploy/farm-talos/values.yaml` to avoid bouncing the stateful pod for a no-op rebuild). Skip `runtime` unless toolchain pins (`packaging/rust-version`, `packaging/claude-code-version`, etc.) actually changed — runtime has its own lifecycle and a rebuild may pick up unrelated WIP pins.
 
 ```bash
 ./packaging/scripts/build-images.sh backend web controller claude-broker repocache \
@@ -457,7 +457,7 @@ Wait for the PR to merge before continuing. The build itself can run from any br
 
 Cross-build from Apple Silicon to `linux/amd64` runs ~20–30 min for the five platform images. Verify every line in the log: each image should end with a successful `docker push`. If one fails, rebuild only that image (`./packaging/scripts/build-images.sh <name>`), don't restart the batch.
 
-**3. Update `~/kube/apps/multica/values.yaml`.** Two edits:
+**3. Update `deploy/farm-talos/values.yaml`.** Two edits:
 
 - Top-level `image.tag:` → the new tag.
 - Any per-subsystem `image.tag:` override (`daemon.image.tag`, `controller.image.tag`, `claudeBroker.image.tag`, `repocache.image.tag`) that now equals the new top-level tag is redundant — delete the override line and the comment that justified the drift. Leave `image.tags.postgres: v0.4.0-mk3` alone, it's load-bearing.
@@ -466,7 +466,7 @@ Cross-build from Apple Silicon to `linux/amd64` runs ~20–30 min for the five p
 
 ```bash
 kubectl config current-context              # MUST be admin@farm-talos; abort otherwise
-helm upgrade --install multica packaging/helm/multica/ -n multica -f ~/kube/apps/multica/values.yaml
+helm upgrade --install multica packaging/helm/multica/ -n multica -f deploy/farm-talos/values.yaml
 for d in multica-backend multica-web multica-controller multica-claude-broker multica-repocache; do
   kubectl -n multica rollout status deploy/$d --timeout=5m
 done
