@@ -223,6 +223,8 @@ export interface TaskMessagePayload {
   content?: string;
   input?: Record<string, unknown>;
   output?: string;
+  /** Server-side record time (RFC3339). Drives per-action timing in the transcript. */
+  created_at?: string;
 }
 
 export interface TaskQueuedPayload {

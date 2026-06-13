@@ -48,6 +48,9 @@ type TaskMessagePayload struct {
 	Content string         `json:"content,omitempty"` // text content
 	Input   map[string]any `json:"input,omitempty"`   // tool input (tool_use only)
 	Output  string         `json:"output,omitempty"`  // tool output (tool_result only)
+	// CreatedAt is the server-side record time (RFC3339). The transcript uses
+	// it to derive per-action duration and the gap since the prior action.
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 // DaemonRegisterPayload is sent from daemon to server on connection.

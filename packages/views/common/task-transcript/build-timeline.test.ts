@@ -66,6 +66,44 @@ describe("task transcript timeline", () => {
     ]);
   });
 
+  it("carries created_at onto each item as start/end timestamps", () => {
+    const items = buildTimeline([
+      { task_id: "t", issue_id: "i", seq: 1, type: "text", content: "hi", created_at: "2026-06-12T18:00:00Z" },
+    ]);
+
+    const ts = Date.parse("2026-06-12T18:00:00Z");
+    expect(items[0]?.startTs).toBe(ts);
+    expect(items[0]?.endTs).toBe(ts);
+  });
+
+  it("spans coalesced text from the first to the last fragment timestamp", () => {
+    const items = buildTimeline([
+      { task_id: "t", issue_id: "i", seq: 1, type: "text", content: "a", created_at: "2026-06-12T18:00:00Z" },
+      { task_id: "t", issue_id: "i", seq: 2, type: "text", content: "b", created_at: "2026-06-12T18:00:03Z" },
+    ]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.startTs).toBe(Date.parse("2026-06-12T18:00:00Z"));
+    expect(items[0]?.endTs).toBe(Date.parse("2026-06-12T18:00:03Z"));
+  });
+
+  it("extends a tool_use duration to its matching tool_result", () => {
+    const items = buildTimeline([
+      { task_id: "t", issue_id: "i", seq: 1, type: "tool_use", tool: "bash", created_at: "2026-06-12T18:00:00Z" },
+      { task_id: "t", issue_id: "i", seq: 2, type: "tool_result", tool: "bash", output: "ok", created_at: "2026-06-12T18:00:05Z" },
+    ]);
+
+    const use = items.find((i) => i.type === "tool_use");
+    expect(use?.startTs).toBe(Date.parse("2026-06-12T18:00:00Z"));
+    expect(use?.endTs).toBe(Date.parse("2026-06-12T18:00:05Z"));
+  });
+
+  it("leaves timestamps undefined when the backend omits created_at", () => {
+    const items = buildTimeline([message(1, "tool_use", undefined)]);
+    expect(items[0]?.startTs).toBeUndefined();
+    expect(items[0]?.endTs).toBeUndefined();
+  });
+
   it("redacts secrets after adjacent chunks are coalesced", () => {
     const items = buildTimeline([
       message(1, "text", "Authorization: Bearer abc123xyz."),
