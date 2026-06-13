@@ -389,6 +389,11 @@ function TimelineSkeleton() {
   );
 }
 
+// Surface the button once the pane is ~one viewport-ish away from the bottom,
+// so it appears on timelines long enough to scroll and hides near the latest
+// activity.
+const SCROLL_TO_BOTTOM_THRESHOLD_PX = 240;
+
 // Floating "scroll to bottom" affordance for long timelines. Mounts over the
 // scroll pane (not inside it) so it stays pinned to the viewport instead of
 // scrolling away with the content. Surfaces only once the pane is meaningfully
@@ -407,7 +412,7 @@ function ScrollToBottomButton({
     const update = () => {
       const distanceFromBottom =
         scrollEl.scrollHeight - scrollEl.clientHeight - scrollEl.scrollTop;
-      setVisible(distanceFromBottom > 240);
+      setVisible(distanceFromBottom > SCROLL_TO_BOTTOM_THRESHOLD_PX);
     };
     update();
     scrollEl.addEventListener("scroll", update, { passive: true });
