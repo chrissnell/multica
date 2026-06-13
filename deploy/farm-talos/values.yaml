@@ -1,0 +1,126 @@
+# Per-deployment overrides for the multica Helm chart.
+# Source chart: /Users/cjs/dev/multica/packaging/helm/multica/
+
+hostname: multica.chrissnell.com
+
+image:
+  registry: registry.chrissnell.com/multica
+  pullSecret: registry-credentials
+  pullPolicy: IfNotPresent
+  tag: v0.4.0-mk11
+  tags:
+    # PG 17 + pgvector v0.7.4 have been unchanged from mk3 through the current
+    # top-level — pure rebuilds — so pin postgres at mk3 to avoid bouncing the
+    # stateful pod just to repull the same bits.
+    postgres: v0.4.0-mk3
+
+# Public exposure is handled OUT of this chart: a standalone
+# cloudflare-tunnel Ingress (multica-cf-ingress.yaml) puts multica behind the
+# shared Cloudflare Tunnel, gated by a Cloudflare Access One-Time PIN policy.
+# All chart-managed ingresses (the nginx public ingress and the .local LAN
+# ingress) are disabled so the OTP-protected tunnel hostname is the only door.
+ingress:
+  enabled: false
+
+platform:
+  enabled: true
+  backend:
+    replicaCount: 1
+    appEnv: production
+    allowSignup: true
+    publicUrl: https://multica.chrissnell.com
+    # Log into multica once, stay logged in (~10 years). Cloudflare Access OTP
+    # is the real gate in front; this just avoids a second login each visit.
+    authTokenTtl: "87600h"
+    uploads:
+      size: 10Gi
+      storageClass: synology-nfs-csi
+  web:
+    replicaCount: 1
+  postgres:
+    enabled: true
+    size: 20Gi
+    storageClass: synology-nfs-csi
+
+runtime:
+  enabled: true
+  mode: controller
+  serverUrl: http://multica-backend.multica.svc:8080
+  tokenSecretName: multica-token
+  gitSshSecretName: multica-git-ssh
+  # Cluster-wide GitHub PAT injected into every worker Job pod as GH_TOKEN
+  # so the `gh` CLI baked into the runtime image works out of the box.
+  # Secret is created out-of-band; the chart only references it by name.
+  githubTokenSecretName: multica-github-token
+  # Two K8s-mode agents on the same workspace: one with cluster-admin via the
+  # built-in k8s-admin worker profile, one with no cluster API access. The
+  # daemon_id is hashed from (prefix, workspaceID, provider, agentName), so
+  # keeping these names exact preserves the existing agent_runtime rows.
+  workspaceId: ""
+  workspaces:
+    - id: "1d8f9b53-fbd4-4904-b388-7257e3f8eb55"   # Graywolf
+      provider: claude
+      agentName: "Claude (with K8S Homelab Access)"
+      workerProfile: k8s-admin
+      # Digest-pin the runtime image so IfNotPresent on nodes with stale
+      # cached :tag images can't serve an old binary. Re-pin on every
+      # runtime rebuild until the chart adopts digest pinning natively.
+      runtimeImage: "registry.chrissnell.com/multica/multica-runtime-claude@sha256:b7aa3130090d68aeef95e2db7f8274e00a76ae32f1052d6290bbfd1bae01bd6f"
+    - id: "1d8f9b53-fbd4-4904-b388-7257e3f8eb55"   # Graywolf
+      provider: claude
+      agentName: "Claude (No K8S Homelab Access)"
+      runtimeImage: "registry.chrissnell.com/multica/multica-runtime-claude@sha256:b7aa3130090d68aeef95e2db7f8274e00a76ae32f1052d6290bbfd1bae01bd6f"
+  controller:
+    replicaCount: 1
+    image:
+      name: multica-controller   # tag inherits from image.tag
+    workdir:
+      # Tried archlinux-nfs (NFSv4.1) — turned out 9x SLOWER (191s vs
+      # 20s for a graywolf checkout). Backed by slower disks on that
+      # server, the protocol version improvement couldn't overcome it.
+      # For meaningful speedup we'd need true node-local storage,
+      # which on Talos requires either a user-volume in the machine
+      # config or a CSI like Longhorn — its own project.
+      storageClass: synology-nfs-csi
+      size: 5Gi
+  # In-cluster OAuth token broker — single source of truth for the Anthropic
+  # refresh_token. Workers get the access_token via secretKeyRef from the
+  # broker-mirrored Secret (no refresh_token in worker pods at all).
+  claudeBroker:
+    enabled: true
+    image:
+      name: multica-claude-broker
+  # In-cluster repo cache (Plan F.1). Maintains bare clones of every
+  # workspace repo on an RWX PVC. Worker Job pods mount the PVC RO and clone
+  # via file:// URLs rewritten through a per-task gitconfig CM. Sub-second
+  # per-task clones; decouples workers from origin during a job.
+  repocache:
+    enabled: true
+    image:
+      name: multica-repocache
+    # 5 min keeps workspace repos fresh enough for the agent while being
+    # polite to GitHub: 12 fetches/hour/repo instead of 60. Also aligns
+    # with the broker's refreshPad so any rate-coupled drift is gentle.
+    fetchInterval: 5m
+    storage:
+      storageClass: synology-nfs-csi   # NFS CSI driver supports RWX natively
+      accessMode: ReadWriteMany
+      size: 20Gi
+  daemon:
+    replicaCount: 1
+    deviceName: multica-cluster
+    maxConcurrentTasks: 2
+    image:
+      name: multica-runtime-claude
+    agent:
+      provider: claude
+      auth: oauth
+      oauthSecretName: multica-claude-oauth
+    git:
+      authorName: "Chris Snell"
+      authorEmail: "1072626+chrissnell@users.noreply.github.com"
+      signing:
+        enabled: true
+
+bootstrap:
+  enabled: false
