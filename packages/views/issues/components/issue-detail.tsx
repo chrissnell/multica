@@ -7,6 +7,7 @@ import { AppLink } from "../../navigation";
 import { useNavigation } from "../../navigation";
 import {
   Archive,
+  ArrowDown,
   Calendar,
   CalendarClock,
   CalendarDays,
@@ -384,6 +385,65 @@ function TimelineSkeleton() {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// Floating "scroll to bottom" affordance for long timelines. Mounts over the
+// scroll pane (not inside it) so it stays pinned to the viewport instead of
+// scrolling away with the content. Surfaces only once the pane is meaningfully
+// scrollable and the user has drifted away from the latest activity.
+function ScrollToBottomButton({
+  scrollEl,
+  label,
+}: {
+  scrollEl: HTMLDivElement | null;
+  label: string;
+}) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    if (!scrollEl) return;
+    const update = () => {
+      const distanceFromBottom =
+        scrollEl.scrollHeight - scrollEl.clientHeight - scrollEl.scrollTop;
+      setVisible(distanceFromBottom > 240);
+    };
+    update();
+    scrollEl.addEventListener("scroll", update, { passive: true });
+    // Observe both the pane (viewport resize) and its content child (timeline
+    // growth as comments stream in / markdown finishes laying out).
+    const ro = new ResizeObserver(update);
+    ro.observe(scrollEl);
+    if (scrollEl.firstElementChild) ro.observe(scrollEl.firstElementChild);
+    return () => {
+      scrollEl.removeEventListener("scroll", update);
+      ro.disconnect();
+    };
+  }, [scrollEl]);
+
+  if (!scrollEl) return null;
+
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center">
+      <Button
+        variant="secondary"
+        size="sm"
+        aria-hidden={!visible}
+        tabIndex={visible ? 0 : -1}
+        onClick={() =>
+          scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: "smooth" })
+        }
+        className={cn(
+          "gap-1.5 rounded-full border bg-background/95 shadow-md backdrop-blur transition-all duration-200",
+          visible
+            ? "pointer-events-auto translate-y-0 opacity-100"
+            : "pointer-events-none translate-y-2 opacity-0",
+        )}
+      >
+        <ArrowDown className="h-3.5 w-3.5" />
+        {label}
+      </Button>
     </div>
   );
 }
@@ -1728,6 +1788,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           }
         />
 
+        <div className="relative flex min-h-0 flex-1 flex-col">
         <div
           ref={setScrollContainerEl}
           data-tab-scroll-root
@@ -2025,6 +2086,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               <CommentInput key={id} issueId={id} onSubmit={submitComment} />
             </div>
           </div>
+        </div>
+        <ScrollToBottomButton
+          scrollEl={scrollContainerEl}
+          label={t(($) => $.detail.scroll_to_bottom)}
+        />
         </div>
         </div>
       </div>
