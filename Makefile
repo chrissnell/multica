@@ -328,6 +328,10 @@ test-scripts: ## Run all bash test scripts under packaging/scripts/tests/
 		"$$t" || exit 1; \
 	done
 
+check-runtime-paths: ## Verify every runtime-watched path still exists
+	@packaging/scripts/check-runtime-paths.sh >/dev/null
+	@echo "ok: all runtime watched paths present"
+
 # Cleanup
 ##@ Cleanup
 
