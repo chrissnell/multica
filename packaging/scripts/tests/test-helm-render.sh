@@ -58,8 +58,78 @@ test_migrate_hook_renders() {
   assert_contains "runs migrate command" "$out" "/app/migrate"
 }
 
+test_image_helper_tag_only() {
+  echo "test_image_helper_tag_only"
+  local out
+  out="$(render --show-only templates/platform/backend-deployment.yaml)"
+  assert_contains "tag-only ref" "$out" "image: registry.test/multica-backend:test-tag"
+  assert_not_contains "no digest suffix" "$out" "@sha256"
+}
+
+test_image_helper_with_digest() {
+  echo "test_image_helper_with_digest"
+  local digest="sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1"
+  local out
+  out="$(render --show-only templates/platform/backend-deployment.yaml \
+                --set image.digests.backend="${digest}")"
+  assert_contains "digest pinned ref" "$out" "image: registry.test/multica-backend:test-tag@${digest}"
+}
+
+test_controller_image_helper_with_digest() {
+  echo "test_controller_image_helper_with_digest"
+  local digest="sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  local out
+  out="$(render --show-only templates/runtime/controller-deployment.yaml \
+                --set image.digests.controller="${digest}" \
+                --set runtime.enabled=true \
+                --set runtime.mode=controller \
+                --set runtime.workspaceId=ws-test)"
+  assert_contains "controller digest pinned" "$out" "@${digest}"
+}
+
+test_claude_broker_image_helper_with_digest() {
+  echo "test_claude_broker_image_helper_with_digest"
+  local digest="sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  local out
+  out="$(render --show-only templates/runtime/claude-broker-deployment.yaml \
+                --set image.digests.claudeBroker="${digest}" \
+                --set runtime.enabled=true \
+                --set runtime.mode=controller \
+                --set runtime.claudeBroker.enabled=true \
+                --set runtime.workspaceId=ws-test)"
+  assert_contains "claude-broker digest pinned" "$out" "@${digest}"
+}
+
+test_repocache_image_helper_with_digest() {
+  echo "test_repocache_image_helper_with_digest"
+  local digest="sha256:3333333333333333333333333333333333333333333333333333333333333333"
+  local out
+  out="$(render --show-only templates/runtime/repocache-deployment.yaml \
+                --set image.digests.repocache="${digest}" \
+                --set runtime.enabled=true \
+                --set runtime.mode=controller \
+                --set runtime.repocache.enabled=true \
+                --set runtime.workspaceId=ws-test)"
+  assert_contains "repocache digest pinned" "$out" "@${digest}"
+}
+
+test_migrate_hook_uses_digest() {
+  echo "test_migrate_hook_uses_digest"
+  local digest="sha256:4444444444444444444444444444444444444444444444444444444444444444"
+  local out
+  out="$(render --show-only templates/platform/migrate-job.yaml \
+                --set image.digests.backend="${digest}")"
+  assert_contains "migrate hook uses digest" "$out" "@${digest}"
+}
+
 main() {
+  test_image_helper_tag_only
+  test_image_helper_with_digest
+  test_controller_image_helper_with_digest
+  test_claude_broker_image_helper_with_digest
+  test_repocache_image_helper_with_digest
   test_migrate_hook_renders
+  test_migrate_hook_uses_digest
   echo
   echo "Results: $PASS passed, $FAIL failed"
   [ "$FAIL" -eq 0 ]

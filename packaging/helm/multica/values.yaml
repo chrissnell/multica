@@ -31,6 +31,17 @@ image:
     controller: ""
     repoCache: ""
     runtimeClaude: ""
+  # Per-image digest pins. When set (sha256:...), the rendered image ref is
+  # "<registry>/<name>:<tag>@<digest>" so IfNotPresent always pulls when the
+  # digest changes. CI populates this; humans don't edit it.
+  digests:
+    backend: ""
+    web: ""
+    controller: ""
+    claudeBroker: ""
+    repocache: ""
+    postgres: ""
+    runtimeClaude: ""
   pullPolicy: IfNotPresent
 
 # ── Control plane subsystem ────────────────────────────────
