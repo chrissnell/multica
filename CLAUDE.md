@@ -514,3 +514,20 @@ All queries filter by `workspace_id`. Membership checks gate access. `X-Workspac
 ## Agent Assignees
 
 Assignees are polymorphic — can be a member or an agent. `assignee_type` + `assignee_id` on issues. Agents render with distinct styling (purple background, robot icon).
+
+## Agent PR Policy
+
+PRs from automated sessions may carry the `auto-merge` label. When that label
+is present and CI is green, GitHub's native auto-merge fires and the PR
+merges through the queue. Sessions without the label require a human
+"Merge" click.
+
+To enable auto-merge per PR (manual):
+
+```bash
+gh pr merge <num> --auto --squash
+```
+
+To grant a session the right to set the label, add it to the project's
+`AUTO_MERGE_SESSIONS` allowlist (TBD — for now, set the label by hand on
+trusted sessions).

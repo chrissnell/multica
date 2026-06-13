@@ -1,0 +1,5 @@
+# CI-owned files. Only the release bot may modify these in a PR; any other
+# author touching them triggers a required review request that the bot can't
+# satisfy, forcing the change to come from the release workflow itself.
+packaging/image-tag                  @multica-release-bot
+deploy/farm-talos/values.yaml        @multica-release-bot
