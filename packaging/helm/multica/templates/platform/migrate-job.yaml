@@ -1,0 +1,37 @@
+{{- if .Values.platform.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: multica-migrate-{{ .Release.Revision }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "multica.componentLabels" (dict "name" "migrate" "ctx" .) | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "multica.componentLabels" (dict "name" "migrate" "ctx" .) | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: {{ .Values.image.pullSecret }}
+      containers:
+        - name: migrate
+          image: {{ include "multica.image" (dict "key" "backend" "ctx" .) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/migrate", "up"]
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.platform.postgres.secretName | default "multica-postgres" }}
+                  key: password
+            - name: DATABASE_URL
+              value: {{ include "multica.databaseUrl" . | quote }}
+{{- end }}
