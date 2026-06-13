@@ -164,18 +164,6 @@ function formatElapsedMs(ms: number): string {
   return `${minutes}m ${secs}s`;
 }
 
-// Per-action timing wants sub-second resolution (tools can be fast), unlike the
-// run-level helpers above which floor to whole seconds.
-function formatTimingMs(ms: number): string {
-  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`;
-  const totalSec = ms / 1000;
-  if (totalSec < 10) return `${totalSec.toFixed(1)}s`;
-  if (totalSec < 60) return `${Math.round(totalSec)}s`;
-  const minutes = Math.floor(totalSec / 60);
-  const secs = Math.round(totalSec % 60);
-  return `${minutes}m ${secs}s`;
-}
-
 interface ActionTiming {
   /** How long the action itself took (start → end / matching tool_result). */
   durationMs?: number;
@@ -835,7 +823,7 @@ const TranscriptEventRow = ({
                   title="Time since the previous action completed"
                   className="text-[10px] text-muted-foreground/60"
                 >
-                  +{formatTimingMs(timing!.intervalMs!)}
+                  +{formatElapsedMs(timing!.intervalMs!)}
                 </span>
               )}
               {showDuration && (
@@ -844,7 +832,7 @@ const TranscriptEventRow = ({
                   className="inline-flex items-center gap-0.5 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground"
                 >
                   <Clock className="h-2.5 w-2.5" />
-                  {formatTimingMs(timing!.durationMs!)}
+                  {formatElapsedMs(timing!.durationMs!)}
                 </span>
               )}
             </div>
