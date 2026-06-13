@@ -332,6 +332,13 @@ check-runtime-paths: ## Verify every runtime-watched path still exists
 	@packaging/scripts/check-runtime-paths.sh >/dev/null
 	@echo "ok: all runtime watched paths present"
 
+release: ## Trigger a release: preflight, confirm, dispatch workflow, watch run.
+	@packaging/scripts/release-preflight.sh $(if $(REBUILD_POSTGRES),--postgres,)
+	@gh workflow run release.yml $(if $(REBUILD_POSTGRES),--field rebuild_postgres=true,)
+	@echo "Workflow dispatched; watching latest run..."
+	@sleep 3
+	@gh run watch --exit-status
+
 # Cleanup
 ##@ Cleanup
 
