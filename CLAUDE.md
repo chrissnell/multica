@@ -517,17 +517,12 @@ Assignees are polymorphic — can be a member or an agent. `assignee_type` + `as
 
 ## Agent PR Policy
 
-PRs from automated sessions may carry the `auto-merge` label. When that label
-is present and CI is green, GitHub's native auto-merge fires and the PR
-merges through the queue. Sessions without the label require a human
-"Merge" click.
+PRs from automated sessions may carry the `auto-merge` label as a hint that
+the work is ready to ship, but merging is always a human action — open the
+PR, confirm the diff, click Merge. CI is the only automated gate.
 
-To enable auto-merge per PR (manual):
-
-```bash
-gh pr merge <num> --auto --squash
-```
-
-To grant a session the right to set the label, add it to the project's
-`AUTO_MERGE_SESSIONS` allowlist (TBD — for now, set the label by hand on
-trusted sessions).
+CODEOWNERS reserves `packaging/image-tag` and `deploy/farm-talos/values.yaml`
+for the `multica-release-bot` GitHub App. Agent PRs that touch those files
+will fail the protection check until the release bot's automation
+(`make release` → `image-release.yml`) modifies them. This is intentional —
+it prevents two parallel agent PRs from racing on the same `mkN` suffix.
