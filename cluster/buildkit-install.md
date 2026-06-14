@@ -7,10 +7,20 @@ runner pods address via `tcp://buildkitd.multica-ci.svc:1234`. One daemon
 means one shared cache PVC, which is exactly the win we want over
 GitHub-hosted runners.
 
+## Note on rootless vs privileged
+
+Rootless buildkit requires the node kernel to expose `user.max_user_namespaces`
+non-zero. Talos sets this to 0 by default, so the rootless image fails to
+start (`fork/exec /proc/self/exe: no space left on device` from rootlesskit).
+We use the non-rootless buildkit image with `privileged: true` instead. The
+daemon is contained to the privileged-labeled `multica-ci` namespace and only
+serves the in-cluster GHA runners.
+
 ## Install
 
 ```bash
 kubectl create namespace multica-ci
+kubectl label ns multica-ci pod-security.kubernetes.io/enforce=privileged --overwrite
 
 cat <<'EOF' | kubectl apply -f -
 apiVersion: v1
@@ -20,6 +30,7 @@ metadata:
   namespace: multica-ci
 spec:
   accessModes: [ReadWriteOnce]
+  storageClassName: synology-nfs-csi
   resources:
     requests:
       storage: 50Gi
@@ -38,27 +49,22 @@ spec:
   template:
     metadata:
       labels: {app: buildkitd}
-      annotations:
-        container.apparmor.security.beta.kubernetes.io/buildkitd: unconfined
     spec:
       containers:
         - name: buildkitd
-          image: moby/buildkit:v0.13.0-rootless
+          image: moby/buildkit:v0.13.0
           args:
             - --addr
-            - unix:///run/user/1000/buildkit/buildkitd.sock
+            - unix:///run/buildkit/buildkitd.sock
             - --addr
             - tcp://0.0.0.0:1234
-            - --oci-worker-no-process-sandbox
           securityContext:
-            seccompProfile: {type: Unconfined}
-            runAsUser: 1000
-            runAsGroup: 1000
+            privileged: true
           ports:
             - containerPort: 1234
           volumeMounts:
             - name: cache
-              mountPath: /home/user/.local/share/buildkit
+              mountPath: /var/lib/buildkit
       volumes:
         - name: cache
           persistentVolumeClaim:
@@ -81,11 +87,11 @@ Verify:
 
 ```bash
 kubectl -n multica-ci rollout status deploy/buildkitd --timeout=2m
-kubectl -n multica-ci run buildkit-smoke --rm -it --image=moby/buildkit:v0.13.0 \
-  --restart=Never --command -- buildctl --addr tcp://buildkitd.multica-ci.svc:1234 debug info
+kubectl -n multica-ci run buildkit-smoke --rm -i --image=moby/buildkit:v0.13.0 \
+  --restart=Never --overrides='{"spec":{"containers":[{"name":"buildkit-smoke","image":"moby/buildkit:v0.13.0","command":["buildctl","--addr","tcp://buildkitd.multica-ci.svc:1234","debug","info"]}]}}'
 ```
 
-Expected: `buildctl debug info` prints the daemon's version, workers, and platforms.
+Expected: prints `BuildKit: github.com/moby/buildkit v0.13.0 ...`.
 
 ## Harbor push credentials
 
