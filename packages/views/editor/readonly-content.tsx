@@ -16,11 +16,12 @@
  * - Rendering mentions with the same IssueMentionCard component and .mention class
  */
 
-import { isValidElement, memo, useMemo, useRef } from "react";
+import { isValidElement, memo, useMemo, useRef, useState } from "react";
 import ReactMarkdown, {
   defaultUrlTransform,
   type Components,
 } from "react-markdown";
+import { Copy, Check } from "lucide-react";
 import rehypeKatex from "rehype-katex";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
@@ -33,6 +34,7 @@ import { cn } from "@multica/ui/lib/utils";
 import { useWorkspacePaths, useWorkspaceSlug } from "@multica/core/paths";
 import type { Attachment } from "@multica/core/types";
 import { useNavigation } from "../navigation";
+import { useT } from "../i18n";
 import { IssueMentionCard } from "../issues/components/issue-mention-card";
 import { useLinkHover, LinkHoverCard } from "./link-hover-card";
 import { openLink, isMentionHref } from "./utils/link-handler";
@@ -167,10 +169,81 @@ function ReadonlyLink({
   );
 }
 
+// Recursively flatten a hast node to plain text. Block-level elements
+// (paragraphs, list items, <br>) contribute line breaks so multi-paragraph
+// blockquotes copy back as readable text rather than one run-on line.
+type HastNode = {
+  type?: string;
+  value?: string;
+  tagName?: string;
+  children?: HastNode[];
+};
+
+function hastToText(node: HastNode | undefined): string {
+  if (!node) return "";
+  if (node.type === "text") return node.value ?? "";
+  const inner = (node.children ?? []).map(hastToText).join("");
+  if (node.type === "element") {
+    if (node.tagName === "br") return "\n";
+    if (node.tagName === "p" || node.tagName === "li") return `${inner}\n`;
+  }
+  return inner;
+}
+
+// Blockquote with a hover copy button. Issue-timeline instructions are
+// authored as blockquotes; this lets a reader copy the quoted text in one
+// click. The Copy/Check icon mirrors the code-block affordance.
+function BlockquoteWithCopy({
+  node,
+  children,
+}: {
+  node?: HastNode;
+  children?: React.ReactNode;
+}) {
+  const { t } = useT("editor");
+  const [copied, setCopied] = useState(false);
+  const text = useMemo(() => hastToText(node).trim(), [node]);
+
+  const handleCopy = async () => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard unavailable (denied permission / non-secure context) — no-op.
+    }
+  };
+
+  return (
+    <blockquote className="group/quote relative pr-9">
+      {text && (
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="absolute top-1 right-1 flex h-6 w-6 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover/quote:opacity-100"
+          title={t(($) => $.blockquote.copy)}
+          aria-label={t(($) => $.blockquote.copy)}
+        >
+          {copied ? (
+            <Check className="h-3.5 w-3.5" />
+          ) : (
+            <Copy className="h-3.5 w-3.5" />
+          )}
+        </button>
+      )}
+      {children}
+    </blockquote>
+  );
+}
+
 function buildComponents(): Partial<Components> {
   return {
     // Links — route mention:// to mention components, others show preview card
     a: ReadonlyLink,
+
+    // Blockquotes — add a hover copy-to-clipboard button (timeline instructions)
+    blockquote: BlockquoteWithCopy,
 
     // Images — unified through <Attachment>. The resolver context provided
     // by AttachmentDownloadProvider (mounted in ReadonlyContent below) turns
