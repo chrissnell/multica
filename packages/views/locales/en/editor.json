@@ -63,6 +63,9 @@
     "show_source": "Show source",
     "fullscreen": "Fullscreen"
   },
+  "blockquote": {
+    "copy": "Copy"
+  },
   "file_card": {
     "uploading": "Uploading {{filename}}"
   },

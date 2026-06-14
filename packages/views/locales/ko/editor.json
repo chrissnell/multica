@@ -63,6 +63,9 @@
     "show_source": "소스 표시",
     "fullscreen": "전체 화면"
   },
+  "blockquote": {
+    "copy": "복사"
+  },
   "file_card": {
     "uploading": "{{filename}} 업로드 중"
   },
