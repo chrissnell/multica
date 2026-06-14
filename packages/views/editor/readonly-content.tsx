@@ -206,9 +206,13 @@ function BlockquoteWithCopy({
 
   const handleCopy = async () => {
     if (!text) return;
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard unavailable (denied permission / non-secure context) — no-op.
+    }
   };
 
   return (
