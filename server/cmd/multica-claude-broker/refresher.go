@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -25,6 +26,16 @@ type Refresher struct {
 	leader     LeaderGate
 	oauth      *OAuthClient
 	refreshPad time.Duration
+
+	// refreshMu serializes the actual OAuth refresh. Each refresh rotates the
+	// refresh_token server-side, so two refreshes racing on the same stored
+	// refresh_token both call Anthropic, both persist (last-write-wins), and
+	// every access_token handed out from a losing race is left paired with a
+	// refresh_token that's already been superseded — clients then see
+	// intermittent 401s and the next refresh can fail with invalid_grant.
+	// Holding this lock across load+refresh+store collapses a burst of
+	// /access_token requests in the refresh window into a single rotation.
+	refreshMu sync.Mutex
 }
 
 func NewRefresher(store *SecretStore, leader LeaderGate, oauth *OAuthClient, refreshPad time.Duration) *Refresher {
@@ -52,6 +63,23 @@ func (r *Refresher) RefreshIfNeeded(ctx context.Context) (bool, *TokenState, err
 
 	if !r.leader.IsLeader() {
 		return false, state, ErrNotLeader
+	}
+
+	// Serialize the rotation. Waiters block here only briefly — a refresh is a
+	// single sub-second round-trip in the common case — and then take the
+	// double-check below rather than rotating a second time.
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
+
+	// Double-check under the lock: a sibling that held the lock may have just
+	// refreshed and stored a fresh token while we were waiting. Adopt it
+	// instead of spending another rotation that would invalidate it.
+	state, err = r.store.Load(ctx)
+	if err != nil {
+		return false, nil, fmt.Errorf("reload under refresh lock: %w", err)
+	}
+	if !state.ExpiresAt.IsZero() && time.Until(state.ExpiresAt) > r.refreshPad {
+		return false, state, nil
 	}
 
 	res, err := r.oauth.Refresh(ctx, state.RefreshToken)
