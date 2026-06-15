@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -130,6 +131,59 @@ func TestRefreshIfNeeded_LeaderRefresh_EmptyRotatedTokenKeepsOld(t *testing.T) {
 	}
 	if newState.RefreshToken != "REFRESH_OLD" {
 		t.Errorf("expected refresh_token to be preserved when server omits it; got %q", newState.RefreshToken)
+	}
+}
+
+// TestRefreshIfNeeded_ConcurrentRefreshSingleFlights guards the fix for the
+// intermittent-401 bug: a burst of /access_token requests landing inside the
+// refresh window must rotate the refresh_token exactly once, not once per
+// caller. Each refresh rotates the token server-side, so N concurrent
+// rotations would invalidate the access_tokens handed out by the losing races.
+func TestRefreshIfNeeded_ConcurrentRefreshSingleFlights(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		// Hold briefly so the other goroutines genuinely contend for the lock
+		// (TryLock-fail and serve cached) while this one is mid-rotation.
+		time.Sleep(50 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "ACCESS_NEW",
+			"refresh_token": "REFRESH_NEW",
+			"expires_in":    3600, // comfortably past the 5m pad → recheck short-circuits
+		})
+	}))
+	defer srv.Close()
+	state := &TokenState{
+		AccessToken:  "ACCESS_OLD",
+		RefreshToken: "REFRESH_OLD",
+		ExpiresAt:    time.Now().Add(1 * time.Minute), // within refresh pad
+	}
+	r := makeRefresher(t, state, true, srv.URL)
+
+	const n = 16
+	var wg sync.WaitGroup
+	var refreshedCount int32
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			refreshed, _, err := r.RefreshIfNeeded(context.Background())
+			if err != nil {
+				t.Errorf("RefreshIfNeeded: %v", err)
+				return
+			}
+			if refreshed {
+				atomic.AddInt32(&refreshedCount, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("upstream Anthropic calls = %d, want exactly 1 (single-flight)", got)
+	}
+	if got := atomic.LoadInt32(&refreshedCount); got != 1 {
+		t.Errorf("callers that rotated = %d, want exactly 1", got)
 	}
 }
 

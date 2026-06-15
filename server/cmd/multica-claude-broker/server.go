@@ -87,6 +87,15 @@ func (b *Broker) tickRefresh(ctx context.Context) {
 		b.logger.Info("refresh ok", "expires_at", state.ExpiresAt)
 	case err == nil && !refreshed:
 		refreshTotal.WithLabelValues(outcomeSkipped).Inc()
+		// No rotation happened, but RefreshIfNeeded handed back the state it
+		// just read from the Secret. Adopt it so the in-memory cache always
+		// tracks the Secret — otherwise a pod that never performs a refresh
+		// itself (a non-leader replica, or a waiter that lost the single-flight
+		// race) keeps serving whatever token it loaded at startup even after
+		// the leader has rotated the Secret out from under it.
+		if state != nil {
+			b.setCached(state)
+		}
 	case errors.Is(err, ErrNotLeader):
 		refreshTotal.WithLabelValues(outcomeSkipped).Inc()
 		refreshFailures.WithLabelValues("not_leader").Inc()
@@ -110,6 +119,15 @@ func (b *Broker) tickRefresh(ctx context.Context) {
 
 func (b *Broker) setCached(state *TokenState) {
 	b.mu.Lock()
+	// Monotonic on expiry: never replace the cached token with one that expires
+	// earlier. The freshest token is the only one guaranteed still valid after a
+	// rotation, so a stale read racing a just-completed refresh (concurrent
+	// ticks, a single-flight waiter) must not clobber the newer token.
+	if b.cached != nil && !state.ExpiresAt.IsZero() && !b.cached.ExpiresAt.IsZero() &&
+		state.ExpiresAt.Before(b.cached.ExpiresAt) {
+		b.mu.Unlock()
+		return
+	}
 	b.cached = state
 	b.mu.Unlock()
 	if !state.ExpiresAt.IsZero() {
@@ -180,6 +198,7 @@ func (b *Broker) accessTokenHandler(w http.ResponseWriter, r *http.Request) {
 	state := b.cachedSnapshot()
 	if state == nil || state.AccessToken == "" {
 		accessTokenRequestsTotal.WithLabelValues(outcomeError).Inc()
+		b.logger.Error("access_token requested but no token is cached", "leader", b.refresher.leader.IsLeader())
 		http.Error(w, "no token available", http.StatusServiceUnavailable)
 		return
 	}
@@ -187,8 +206,22 @@ func (b *Broker) accessTokenHandler(w http.ResponseWriter, r *http.Request) {
 		// Expired and no refresh available — serve as stale so callers see the
 		// 503 they need to surface to operators.
 		accessTokenRequestsTotal.WithLabelValues(outcomeStale).Inc()
+		b.logger.Error("refusing to serve expired access_token; refresh is not keeping up",
+			"expired_at", state.ExpiresAt, "expired_for", time.Since(state.ExpiresAt).Truncate(time.Second).String(),
+			"leader", b.refresher.leader.IsLeader())
 		http.Error(w, "cached token expired and refresh unavailable", http.StatusServiceUnavailable)
 		return
+	}
+	// A token this close to expiry means the refresh path failed (or this pod
+	// isn't the leader): callers that hold it for a multi-minute request will
+	// see a mid-flight 401. Surface it — this is the signal that turns an
+	// "intermittent 401" report into a diagnosable event.
+	if !state.ExpiresAt.IsZero() {
+		if remaining := time.Until(state.ExpiresAt); remaining < time.Minute {
+			b.logger.Warn("serving access_token that is about to expire",
+				"remaining", remaining.Truncate(time.Second).String(), "expires_at", state.ExpiresAt,
+				"leader", b.refresher.leader.IsLeader())
+		}
 	}
 	accessTokenRequestsTotal.WithLabelValues(outcomeOk).Inc()
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
