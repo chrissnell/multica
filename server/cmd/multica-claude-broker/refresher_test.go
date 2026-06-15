@@ -142,15 +142,15 @@ func TestRefreshIfNeeded_LeaderRefresh_EmptyRotatedTokenKeepsOld(t *testing.T) {
 func TestRefreshIfNeeded_ConcurrentRefreshSingleFlights(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := atomic.AddInt32(&calls, 1)
-		// Hold briefly so the goroutines genuinely overlap on the lock.
+		atomic.AddInt32(&calls, 1)
+		// Hold briefly so the other goroutines genuinely contend for the lock
+		// (TryLock-fail and serve cached) while this one is mid-rotation.
 		time.Sleep(50 * time.Millisecond)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  "ACCESS_NEW",
 			"refresh_token": "REFRESH_NEW",
 			"expires_in":    3600, // comfortably past the 5m pad → recheck short-circuits
 		})
-		_ = n
 	}))
 	defer srv.Close()
 	state := &TokenState{

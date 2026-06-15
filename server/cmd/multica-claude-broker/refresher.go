@@ -14,6 +14,13 @@ import (
 // leader-only action.
 var ErrNotLeader = errors.New("not the leader; refresh skipped")
 
+// refreshOpTimeout bounds a single rotation (load + OAuth call + store) once it
+// has been detached from the caller's request context. It's a backstop that
+// guarantees refreshMu is released even if the OAuth client overruns its own
+// timeout + retry budget; it is deliberately generous so it never cuts a
+// legitimate retry sequence short.
+const refreshOpTimeout = 3 * time.Minute
+
 // LeaderGate is the subset of LeaderState that Refresher needs. Pulling it
 // out lets tests pass a stub without spinning up an actual elector.
 type LeaderGate interface {
@@ -27,14 +34,14 @@ type Refresher struct {
 	oauth      *OAuthClient
 	refreshPad time.Duration
 
-	// refreshMu serializes the actual OAuth refresh. Each refresh rotates the
-	// refresh_token server-side, so two refreshes racing on the same stored
+	// refreshMu single-flights the actual OAuth refresh. Each refresh rotates
+	// the refresh_token server-side, so two refreshes racing on the same stored
 	// refresh_token both call Anthropic, both persist (last-write-wins), and
 	// every access_token handed out from a losing race is left paired with a
 	// refresh_token that's already been superseded — clients then see
-	// intermittent 401s and the next refresh can fail with invalid_grant.
-	// Holding this lock across load+refresh+store collapses a burst of
-	// /access_token requests in the refresh window into a single rotation.
+	// intermittent 401s and the next refresh can fail with invalid_grant. The
+	// holder owns load+refresh+store for one rotation; concurrent callers
+	// TryLock, fail, and serve the current cached token rather than queueing.
 	refreshMu sync.Mutex
 }
 
@@ -65,16 +72,27 @@ func (r *Refresher) RefreshIfNeeded(ctx context.Context) (bool, *TokenState, err
 		return false, state, ErrNotLeader
 	}
 
-	// Serialize the rotation. Waiters block here only briefly — a refresh is a
-	// single sub-second round-trip in the common case — and then take the
-	// double-check below rather than rotating a second time.
-	r.refreshMu.Lock()
+	// Single-flight the rotation, but never queue. If another goroutine is
+	// already refreshing, serve the current (still within-pad, non-expired)
+	// token and let that in-flight refresh update the cache. Blocking here
+	// would pile /access_token requests up behind a slow or failing upstream
+	// call — the moment we can least afford added latency.
+	if !r.refreshMu.TryLock() {
+		return false, state, nil
+	}
 	defer r.refreshMu.Unlock()
 
-	// Double-check under the lock: a sibling that held the lock may have just
-	// refreshed and stored a fresh token while we were waiting. Adopt it
-	// instead of spending another rotation that would invalidate it.
-	state, err = r.store.Load(ctx)
+	// Detach the rotation from the caller's context. This is driven from an
+	// HTTP request handler, and a single client disconnecting must not cancel
+	// a refresh that the rest of the burst (and the background loop) is relying
+	// on. Keep request values, drop the cancellation, and bound it independently.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshOpTimeout)
+	defer cancel()
+
+	// Double-check under the lock: a sibling may have refreshed and stored a
+	// fresh token just before we acquired it. Adopt that instead of spending
+	// another rotation that would invalidate it.
+	state, err = r.store.Load(rctx)
 	if err != nil {
 		return false, nil, fmt.Errorf("reload under refresh lock: %w", err)
 	}
@@ -82,7 +100,7 @@ func (r *Refresher) RefreshIfNeeded(ctx context.Context) (bool, *TokenState, err
 		return false, state, nil
 	}
 
-	res, err := r.oauth.Refresh(ctx, state.RefreshToken)
+	res, err := r.oauth.Refresh(rctx, state.RefreshToken)
 	if err != nil {
 		// Preserve cached state. Classification preserved via errors.As.
 		return false, state, err
@@ -98,7 +116,7 @@ func (r *Refresher) RefreshIfNeeded(ctx context.Context) (bool, *TokenState, err
 		// existing refresh_token is acceptable. Keep the old one.
 		newState.RefreshToken = state.RefreshToken
 	}
-	if err := r.store.Store(ctx, newState); err != nil {
+	if err := r.store.Store(rctx, newState); err != nil {
 		return false, state, fmt.Errorf("persist new state: %w", err)
 	}
 	return true, newState, nil
