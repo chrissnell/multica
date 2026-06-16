@@ -63,7 +63,9 @@ jobs:
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
       - name: Guard runtime-watched paths
-        run: packaging/scripts/check-runtime-paths.sh > /dev/null && echo "ok: all runtime watched paths present"
+        run: |
+          packaging/scripts/check-runtime-paths.sh > /dev/null
+          echo "ok - all runtime watched paths present"
 
       - name: Resolve last release tag
         id: last
