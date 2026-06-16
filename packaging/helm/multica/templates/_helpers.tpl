@@ -39,7 +39,15 @@ Resolve an image reference: image.tags.<key> overrides image.tag.
 {{- $img := .ctx.Values.image -}}
 {{- $key := .key -}}
 {{- $tag := default $img.tag (index $img.tags $key) -}}
+{{- $digest := "" -}}
+{{- if $img.digests -}}
+{{- $digest = default "" (index $img.digests $key) -}}
+{{- end -}}
+{{- if $digest -}}
+{{- printf "%s/multica-%s:%s@%s" $img.registry $key $tag $digest -}}
+{{- else -}}
 {{- printf "%s/multica-%s:%s" $img.registry $key $tag -}}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -60,7 +68,15 @@ Resolve the runtime (agent) image reference.
 {{- define "multica.runtimeImage" -}}
 {{- $img := .Values.runtime.daemon.image -}}
 {{- $tag := default .Values.image.tag $img.tag -}}
+{{- $digest := "" -}}
+{{- if .Values.image.digests -}}
+{{- $digest = default "" .Values.image.digests.runtimeClaude -}}
+{{- end -}}
+{{- if $digest -}}
+{{- printf "%s/%s:%s@%s" .Values.image.registry $img.name $tag $digest -}}
+{{- else -}}
 {{- printf "%s/%s:%s" .Values.image.registry $img.name $tag -}}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -70,7 +86,15 @@ Resolve the controller image reference.
 {{- define "multica.controllerImage" -}}
 {{- $img := .Values.runtime.controller.image -}}
 {{- $tag := default .Values.image.tag $img.tag -}}
+{{- $digest := "" -}}
+{{- if .Values.image.digests -}}
+{{- $digest = default "" .Values.image.digests.controller -}}
+{{- end -}}
+{{- if $digest -}}
+{{- printf "%s/%s:%s@%s" .Values.image.registry $img.name $tag $digest -}}
+{{- else -}}
 {{- printf "%s/%s:%s" .Values.image.registry $img.name $tag -}}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -80,7 +104,15 @@ Resolve the claude-broker image reference.
 {{- define "multica.claudeBrokerImage" -}}
 {{- $img := .Values.runtime.claudeBroker.image -}}
 {{- $tag := default .Values.image.tag $img.tag -}}
+{{- $digest := "" -}}
+{{- if .Values.image.digests -}}
+{{- $digest = default "" .Values.image.digests.claudeBroker -}}
+{{- end -}}
+{{- if $digest -}}
+{{- printf "%s/%s:%s@%s" .Values.image.registry $img.name $tag $digest -}}
+{{- else -}}
 {{- printf "%s/%s:%s" .Values.image.registry $img.name $tag -}}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -90,5 +122,13 @@ Resolve the repocache image reference.
 {{- define "multica.repocacheImage" -}}
 {{- $img := .Values.runtime.repocache.image -}}
 {{- $tag := default .Values.image.tag $img.tag -}}
+{{- $digest := "" -}}
+{{- if .Values.image.digests -}}
+{{- $digest = default "" .Values.image.digests.repocache -}}
+{{- end -}}
+{{- if $digest -}}
+{{- printf "%s/%s:%s@%s" .Values.image.registry $img.name $tag $digest -}}
+{{- else -}}
 {{- printf "%s/%s:%s" .Values.image.registry $img.name $tag -}}
+{{- end -}}
 {{- end }}

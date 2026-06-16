@@ -1,0 +1,196 @@
+name: image-release
+on:
+  workflow_dispatch:
+    inputs:
+      rebuild_postgres:
+        description: "Rebuild postgres image (rare, stateful)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: image-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    runs-on: multica-arc-runners
+    timeout-minutes: 30
+    env:
+      HARBOR_HOST: registry.chrissnell.com
+      BUILDKIT_ADDR: tcp://buildkitd.multica-ci.svc:1234
+      YQ_VERSION: v4.44.3
+      CRANE_VERSION: v0.20.2
+      BUILDKIT_CLIENT_VERSION: v0.13.0
+    steps:
+      - name: Mint a GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+
+      - name: Check out main at HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0   # need full history for tag math
+
+      - name: Install build/release CLIs
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/bin"
+          # buildctl (client for in-cluster buildkitd)
+          curl -fsSL "https://github.com/moby/buildkit/releases/download/${BUILDKIT_CLIENT_VERSION}/buildkit-${BUILDKIT_CLIENT_VERSION}.linux-amd64.tar.gz" \
+            | tar -xz -C "$HOME/bin" --strip-components=1 bin/buildctl
+          # yq (Mike Farah v4 — needed by digest pin step)
+          curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -o "$HOME/bin/yq"
+          # crane (digest lookup for runtime image)
+          curl -fsSL "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+            | tar -xz -C "$HOME/bin" crane
+          chmod +x "$HOME/bin/"*
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Guard runtime-watched paths
+        run: make check-runtime-paths
+
+      - name: Resolve last release tag
+        id: last
+        run: |
+          LAST_TAG=$(git describe --tags --match 'v*-mk*' --abbrev=0)
+          echo "tag=${LAST_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether runtime needs rebuild
+        id: runtime
+        run: |
+          set -euo pipefail
+          # Read watched paths line-by-line into an array so spaces/newlines
+          # don't get split unpredictably by shell word-splitting.
+          mapfile -t WATCHED < <(packaging/scripts/check-runtime-paths.sh)
+          if git diff --name-only "${{ steps.last.outputs.tag }}..HEAD" -- "${WATCHED[@]}" | grep -q .; then
+            echo "rebuild=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "rebuild=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump packaging/image-tag
+        id: bump
+        run: |
+          packaging/scripts/bump-image-tag.sh
+          NEW_TAG=$(cat packaging/image-tag)
+          echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push platform images (parallel)
+        run: |
+          set -euo pipefail
+          BUILDCTL="buildctl --addr ${BUILDKIT_ADDR}"
+          # Per-image Dockerfile path. backend/web Dockerfiles live at repo
+          # root; the rest under packaging/docker/<name>/Dockerfile.
+          declare -A DOCKERFILE=(
+            [backend]="Dockerfile"
+            [web]="Dockerfile.web"
+            [controller]="packaging/docker/controller/Dockerfile"
+            [claude-broker]="packaging/docker/claude-broker/Dockerfile"
+            [repocache]="packaging/docker/repocache/Dockerfile"
+            [postgres]="packaging/docker/postgres/Dockerfile"
+          )
+          IMAGES=(backend web controller claude-broker repocache)
+          if [ "${{ steps.runtime.outputs.rebuild }}" = "true" ]; then
+            IMAGES+=(runtime)
+          fi
+          if [ "${{ inputs.rebuild_postgres }}" = "true" ]; then
+            IMAGES+=(postgres)
+          fi
+          mkdir -p /tmp/digests /tmp/build-logs
+
+          # Launch each build in the background, capture pid + log so a
+          # failure in any child propagates out via the wait/exit-code check
+          # below. `wait` alone returns 0 on backgrounded-child failures.
+          declare -A PID
+          for img in "${IMAGES[@]}"; do
+            (
+              set -euo pipefail
+              if [ "$img" = "runtime" ]; then
+                REGISTRY="${HARBOR_HOST}/multica" \
+                TAG="${{ steps.bump.outputs.tag }}" \
+                packaging/scripts/build-images.sh runtime
+              else
+                dockerfile="${DOCKERFILE[$img]}"
+                $BUILDCTL build \
+                  --frontend dockerfile.v0 \
+                  --local context=. \
+                  --local dockerfile="$(dirname "$dockerfile")" \
+                  --opt filename="$(basename "$dockerfile")" \
+                  --output "type=image,name=${HARBOR_HOST}/multica/multica-${img}:${{ steps.bump.outputs.tag }},push=true" \
+                  --metadata-file "/tmp/digests/${img}.json"
+              fi
+            ) > "/tmp/build-logs/${img}.log" 2>&1 &
+            PID[$img]=$!
+          done
+
+          fail=0
+          for img in "${!PID[@]}"; do
+            if ! wait "${PID[$img]}"; then
+              echo "::error::build failed for $img"
+              echo "--- /tmp/build-logs/${img}.log (last 80 lines) ---"
+              tail -n 80 "/tmp/build-logs/${img}.log" || true
+              fail=1
+            else
+              echo "::notice::build succeeded for $img"
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+
+      - name: Pin digests into deploy/farm-talos/values.yaml
+        run: |
+          set -euo pipefail
+          for img in backend web controller claude-broker repocache postgres; do
+            f="/tmp/digests/${img}.json"
+            [ -f "$f" ] || continue
+            digest=$(jq -r '."containerimage.digest"' "$f")
+            if [ -z "$digest" ] || [ "$digest" = "null" ]; then
+              echo "::error::no digest captured for $img" >&2
+              exit 1
+            fi
+            case "$img" in
+              backend|web|controller|postgres) key="$img" ;;
+              claude-broker) key="claudeBroker" ;;
+              repocache) key="repocache" ;;
+            esac
+            yq -i ".image.digests.${key} = \"${digest}\"" deploy/farm-talos/values.yaml
+          done
+          # runtime is built via build-images.sh (no metadata-file); resolve
+          # its digest by inspecting the pushed manifest.
+          if [ "${{ steps.runtime.outputs.rebuild }}" = "true" ]; then
+            runtime_digest=$(crane digest \
+              "${HARBOR_HOST}/multica/multica-runtime-claude:${{ steps.bump.outputs.tag }}")
+            yq -i ".image.digests.runtimeClaude = \"${runtime_digest}\"" deploy/farm-talos/values.yaml
+          fi
+          yq -i ".image.tag = \"${{ steps.bump.outputs.tag }}\"" deploy/farm-talos/values.yaml
+
+      - name: helm upgrade and watch rollout
+        run: |
+          set -euo pipefail
+          # --wait blocks until all resources are Ready (deployments,
+          # statefulsets, hooks, etc.) or the timeout fires. 8m budgets:
+          # ~30s migrate-job + 5 deploys rolling on NFS-backed PVCs.
+          helm upgrade --install multica packaging/helm/multica -n multica \
+            -f deploy/farm-talos/values.yaml \
+            --wait --timeout 8m
+
+      - name: Commit and tag the release
+        run: |
+          set -euo pipefail
+          git config user.name "multica-release-bot[bot]"
+          git config user.email "multica-release-bot[bot]@users.noreply.github.com"
+          git add packaging/image-tag deploy/farm-talos/values.yaml
+          git commit -m "chore(release): ${{ steps.bump.outputs.tag }} [skip ci]" \
+                     -m "$(printf 'images:\n'; jq -r '."containerimage.digest"' /tmp/digests/*.json 2>/dev/null | head)" \
+            || { echo "::error::nothing to commit — digest pin step did not modify values.yaml" >&2; exit 1; }
+          git tag -a "${{ steps.bump.outputs.tag }}" -m "Released by image-release.yml (run ${{ github.run_id }})"
+          git push origin HEAD:main
+          git push origin "${{ steps.bump.outputs.tag }}"

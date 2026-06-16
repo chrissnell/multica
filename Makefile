@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree db-up db-down db-reset selfhost selfhost-build selfhost-stop bump-images print-image-tag print-next-image-tag
+.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree db-up db-down db-reset selfhost selfhost-build selfhost-stop bump-images print-image-tag print-next-image-tag test-scripts check-runtime-paths release
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -319,8 +319,25 @@ bump-images: ## Increment the -mkN suffix in packaging/image-tag (vX.Y.Z-mkN →
 	@echo "Next steps:"
 	@echo "  1. git add packaging/image-tag && git commit -m 'chore(images): bump to $$(cat packaging/image-tag)'"
 	@echo "  2. ./packaging/scripts/build-images.sh    # builds + pushes all images at $$(cat packaging/image-tag)"
-	@echo "  3. Update ~/kube/apps/multica/values.yaml image.tag → $$(cat packaging/image-tag)"
-	@echo "  4. helm upgrade --install multica packaging/helm/multica/ -n multica -f ~/kube/apps/multica/values.yaml"
+	@echo "  3. Update deploy/farm-talos/values.yaml image.tag → $$(cat packaging/image-tag)"
+	@echo "  4. helm upgrade --install multica packaging/helm/multica/ -n multica -f deploy/farm-talos/values.yaml"
+
+test-scripts: ## Run all bash test scripts under packaging/scripts/tests/
+	@for t in packaging/scripts/tests/test-*.sh; do \
+		echo "==> $$t"; \
+		"$$t" || exit 1; \
+	done
+
+check-runtime-paths: ## Verify every runtime-watched path still exists
+	@packaging/scripts/check-runtime-paths.sh >/dev/null
+	@echo "ok: all runtime watched paths present"
+
+release: ## Trigger a release: preflight, confirm, dispatch workflow, watch run.
+	@packaging/scripts/release-preflight.sh $(if $(REBUILD_POSTGRES),--postgres,)
+	@gh workflow run image-release.yml $(if $(REBUILD_POSTGRES),--field rebuild_postgres=true,)
+	@echo "Workflow dispatched; watching latest run..."
+	@sleep 3
+	@gh run watch --exit-status
 
 # Cleanup
 ##@ Cleanup
