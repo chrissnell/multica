@@ -77,6 +77,42 @@ STUB
   chmod +x "$stubdir/gh"
 }
 
+test_preflight_handles_escaped_quotes_in_pr_body() {
+  echo "test_preflight_handles_escaped_quotes_in_pr_body"
+  local stubs
+  stubs=$(mktemp -d)
+  mkdir -p "$stubs"
+  cat > "$stubs/git" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  "describe --tags --match v*-mk* --abbrev=0") echo "v0.4.0-mk10" ;;
+  "log --merges --pretty=%s v0.4.0-mk10..HEAD") echo "Merge pull request #99 from x/y" ;;
+  "log --oneline v0.4.0-mk10..HEAD") echo "abc commit a" ;;
+  *) echo "unhandled git: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$stubs/git"
+  cat > "$stubs/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  "pr view 99 --json title,body")
+    # PR title and body both contain escaped quotes — old sed-based parser
+    # truncated at the first \" and produced garbage.
+    cat <<'JSON'
+{"title":"fix: handle \"foo\" correctly","body":"## Summary\n- replaces sed with jq for the \"strict\" parser\n- adds an escape-quote regression test"}
+JSON
+    ;;
+  *) echo "unhandled gh: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$stubs/gh"
+  local out
+  out=$(PATH="$stubs:$PATH" "$SCRIPT" --no-confirm 2>&1)
+  assert_contains "title with escaped quotes preserved" "$out" 'fix: handle "foo" correctly'
+  assert_contains "body with escaped quotes preserved" "$out" 'replaces sed with jq for the "strict" parser'
+  rm -rf "$stubs"
+}
+
 test_preflight_lists_prs() {
   echo "test_preflight_lists_prs"
   local stubs
@@ -126,6 +162,7 @@ test_preflight_aborts_on_blank() {
 }
 
 main() {
+  test_preflight_handles_escaped_quotes_in_pr_body
   test_preflight_lists_prs
   test_preflight_confirms_y
   test_preflight_aborts_on_n

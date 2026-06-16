@@ -29,7 +29,6 @@ image:
     web: ""
     postgres: ""
     controller: ""
-    repoCache: ""
     runtimeClaude: ""
   # Per-image digest pins. When set (sha256:...), the rendered image ref is
   # "<registry>/<name>:<tag>@<digest>" so IfNotPresent always pulls when the

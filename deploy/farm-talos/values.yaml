@@ -13,6 +13,12 @@ image:
     # top-level — pure rebuilds — so pin postgres at mk3 to avoid bouncing the
     # stateful pod just to repull the same bits.
     postgres: v0.4.0-mk3
+  # CI populates these per-image digests on every release; the runtimeClaude
+  # entry below is the migration seed (carried over from the per-workspace
+  # runtimeImage hard-pin that was removed in favor of this canonical field).
+  # Humans don't edit these — image-release.yml owns the file.
+  digests:
+    runtimeClaude: "sha256:b7aa3130090d68aeef95e2db7f8274e00a76ae32f1052d6290bbfd1bae01bd6f"
 
 # Public exposure is handled OUT of this chart: a standalone
 # cloudflare-tunnel Ingress (multica-cf-ingress.yaml) puts multica behind the
@@ -62,14 +68,12 @@ runtime:
       provider: claude
       agentName: "Claude (with K8S Homelab Access)"
       workerProfile: k8s-admin
-      # Digest-pin the runtime image so IfNotPresent on nodes with stale
-      # cached :tag images can't serve an old binary. Re-pin on every
-      # runtime rebuild until the chart adopts digest pinning natively.
-      runtimeImage: "registry.chrissnell.com/multica/multica-runtime-claude@sha256:b7aa3130090d68aeef95e2db7f8274e00a76ae32f1052d6290bbfd1bae01bd6f"
+      # Runtime image resolved via the chart's image.digests.runtimeClaude
+      # field — the release workflow updates that canonical pin so all
+      # workspaces get the same vetted digest.
     - id: "1d8f9b53-fbd4-4904-b388-7257e3f8eb55"   # Graywolf
       provider: claude
       agentName: "Claude (No K8S Homelab Access)"
-      runtimeImage: "registry.chrissnell.com/multica/multica-runtime-claude@sha256:b7aa3130090d68aeef95e2db7f8274e00a76ae32f1052d6290bbfd1bae01bd6f"
   controller:
     replicaCount: 1
     image:

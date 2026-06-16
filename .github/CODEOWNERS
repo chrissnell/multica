@@ -1,5 +1,10 @@
-# CI-owned files. Only the release bot may modify these in a PR; any other
-# author touching them triggers a required review request that the bot can't
-# satisfy, forcing the change to come from the release workflow itself.
-packaging/image-tag                  @multica-release-bot
-deploy/farm-talos/values.yaml        @multica-release-bot
+# CI-owned files. The release workflow's bot (multica-release-bot[bot]) can
+# bypass these via the `main-protection` ruleset's bypass_actors; humans
+# touching these paths must self-review through @chrissnell. GitHub Apps
+# cannot be CODEOWNERS — that's why the owner here is the human, not the bot.
+packaging/image-tag                       @chrissnell
+deploy/farm-talos/values.yaml             @chrissnell
+.github/workflows/image-release.yml       @chrissnell
+.github/workflows/release.yml             @chrissnell
+.github/CODEOWNERS                        @chrissnell
+packaging/helm/multica/                   @chrissnell

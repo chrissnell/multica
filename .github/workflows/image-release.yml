@@ -22,6 +22,9 @@ jobs:
     env:
       HARBOR_HOST: registry.chrissnell.com
       BUILDKIT_ADDR: tcp://buildkitd.multica-ci.svc:1234
+      YQ_VERSION: v4.44.3
+      CRANE_VERSION: v0.20.2
+      BUILDKIT_CLIENT_VERSION: v0.13.0
     steps:
       - name: Mint a GitHub App token
         id: app-token
@@ -37,6 +40,21 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           fetch-depth: 0   # need full history for tag math
 
+      - name: Install build/release CLIs
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/bin"
+          # buildctl (client for in-cluster buildkitd)
+          curl -fsSL "https://github.com/moby/buildkit/releases/download/${BUILDKIT_CLIENT_VERSION}/buildkit-${BUILDKIT_CLIENT_VERSION}.linux-amd64.tar.gz" \
+            | tar -xz -C "$HOME/bin" --strip-components=1 bin/buildctl
+          # yq (Mike Farah v4 — needed by digest pin step)
+          curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -o "$HOME/bin/yq"
+          # crane (digest lookup for runtime image)
+          curl -fsSL "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+            | tar -xz -C "$HOME/bin" crane
+          chmod +x "$HOME/bin/"*
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
       - name: Guard runtime-watched paths
         run: make check-runtime-paths
 
@@ -49,8 +67,11 @@ jobs:
       - name: Decide whether runtime needs rebuild
         id: runtime
         run: |
-          WATCHED=$(packaging/scripts/check-runtime-paths.sh)
-          if git diff --name-only "${{ steps.last.outputs.tag }}..HEAD" -- $WATCHED | grep -q .; then
+          set -euo pipefail
+          # Read watched paths line-by-line into an array so spaces/newlines
+          # don't get split unpredictably by shell word-splitting.
+          mapfile -t WATCHED < <(packaging/scripts/check-runtime-paths.sh)
+          if git diff --name-only "${{ steps.last.outputs.tag }}..HEAD" -- "${WATCHED[@]}" | grep -q .; then
             echo "rebuild=true" >> "$GITHUB_OUTPUT"
           else
             echo "rebuild=false" >> "$GITHUB_OUTPUT"
@@ -84,36 +105,57 @@ jobs:
           if [ "${{ inputs.rebuild_postgres }}" = "true" ]; then
             IMAGES+=(postgres)
           fi
-          mkdir -p /tmp/digests
+          mkdir -p /tmp/digests /tmp/build-logs
+
+          # Launch each build in the background, capture pid + log so a
+          # failure in any child propagates out via the wait/exit-code check
+          # below. `wait` alone returns 0 on backgrounded-child failures.
+          declare -A PID
           for img in "${IMAGES[@]}"; do
             (
+              set -euo pipefail
               if [ "$img" = "runtime" ]; then
-                # Runtime is two stages (base + claude); reuse build-images.sh
-                # which handles the chained build and toolchain ARGs.
                 REGISTRY="${HARBOR_HOST}/multica" \
                 TAG="${{ steps.bump.outputs.tag }}" \
                 packaging/scripts/build-images.sh runtime
               else
+                dockerfile="${DOCKERFILE[$img]}"
                 $BUILDCTL build \
                   --frontend dockerfile.v0 \
                   --local context=. \
-                  --local dockerfile="$(dirname "${DOCKERFILE[$img]}")" \
-                  --opt filename="$(basename "${DOCKERFILE[$img]}")" \
-                  --output type=image,name=${HARBOR_HOST}/multica/multica-${img}:${{ steps.bump.outputs.tag }},push=true \
-                  --metadata-file /tmp/digests/${img}.json
+                  --local dockerfile="$(dirname "$dockerfile")" \
+                  --opt filename="$(basename "$dockerfile")" \
+                  --output "type=image,name=${HARBOR_HOST}/multica/multica-${img}:${{ steps.bump.outputs.tag }},push=true" \
+                  --metadata-file "/tmp/digests/${img}.json"
               fi
-            ) &
+            ) > "/tmp/build-logs/${img}.log" 2>&1 &
+            PID[$img]=$!
           done
-          wait
+
+          fail=0
+          for img in "${!PID[@]}"; do
+            if ! wait "${PID[$img]}"; then
+              echo "::error::build failed for $img"
+              echo "--- /tmp/build-logs/${img}.log (last 80 lines) ---"
+              tail -n 80 "/tmp/build-logs/${img}.log" || true
+              fail=1
+            else
+              echo "::notice::build succeeded for $img"
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
 
       - name: Pin digests into deploy/farm-talos/values.yaml
         run: |
           set -euo pipefail
           for img in backend web controller claude-broker repocache postgres; do
-            f=/tmp/digests/${img}.json
+            f="/tmp/digests/${img}.json"
             [ -f "$f" ] || continue
             digest=$(jq -r '."containerimage.digest"' "$f")
-            # Map the build target name to the values.yaml digests key.
+            if [ -z "$digest" ] || [ "$digest" = "null" ]; then
+              echo "::error::no digest captured for $img" >&2
+              exit 1
+            fi
             case "$img" in
               backend|web|controller|postgres) key="$img" ;;
               claude-broker) key="claudeBroker" ;;
@@ -130,28 +172,25 @@ jobs:
           fi
           yq -i ".image.tag = \"${{ steps.bump.outputs.tag }}\"" deploy/farm-talos/values.yaml
 
-      - name: Commit the release
+      - name: helm upgrade and watch rollout
         run: |
+          set -euo pipefail
+          # --wait blocks until all resources are Ready (deployments,
+          # statefulsets, hooks, etc.) or the timeout fires. 8m budgets:
+          # ~30s migrate-job + 5 deploys rolling on NFS-backed PVCs.
+          helm upgrade --install multica packaging/helm/multica -n multica \
+            -f deploy/farm-talos/values.yaml \
+            --wait --timeout 8m
+
+      - name: Commit and tag the release
+        run: |
+          set -euo pipefail
           git config user.name "multica-release-bot[bot]"
           git config user.email "multica-release-bot[bot]@users.noreply.github.com"
           git add packaging/image-tag deploy/farm-talos/values.yaml
-          git commit -m "chore(release): ${{ steps.bump.outputs.tag }} [skip ci]"
+          git commit -m "chore(release): ${{ steps.bump.outputs.tag }} [skip ci]" \
+                     -m "$(printf 'images:\n'; jq -r '."containerimage.digest"' /tmp/digests/*.json 2>/dev/null | head)" \
+            || { echo "::error::nothing to commit — digest pin step did not modify values.yaml" >&2; exit 1; }
+          git tag -a "${{ steps.bump.outputs.tag }}" -m "Released by image-release.yml (run ${{ github.run_id }})"
           git push origin HEAD:main
-
-      - name: helm upgrade
-        run: |
-          helm upgrade --install multica packaging/helm/multica -n multica \
-            -f deploy/farm-talos/values.yaml \
-            --wait --timeout 5m
-
-      - name: Watch rollouts
-        run: |
-          for d in multica-backend multica-web multica-controller multica-claude-broker multica-repocache; do
-            kubectl -n multica rollout status deploy/$d --timeout=5m &
-          done
-          wait
-
-      - name: Tag the release
-        run: |
-          git tag ${{ steps.bump.outputs.tag }}
-          git push origin ${{ steps.bump.outputs.tag }}
+          git push origin "${{ steps.bump.outputs.tag }}"

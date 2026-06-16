@@ -47,9 +47,9 @@ else
   while read -r pr; do
     [ -z "$pr" ] && continue
     local_json=$(gh pr view "$pr" --json title,body 2>/dev/null || echo '{}')
-    title=$(printf '%s' "$local_json" | sed -nE 's/.*"title":"([^"]*)".*/\1/p')
-    body=$(printf '%s' "$local_json" | sed -nE 's/.*"body":"([^"]*)".*/\1/p')
-    summary=$(printf '%b' "${body//\\n/$'\n'}" \
+    title=$(printf '%s' "$local_json" | jq -r '.title // ""')
+    body=$(printf '%s' "$local_json" | jq -r '.body // ""')
+    summary=$(printf '%s' "$body" \
       | awk 'BEGIN{p=0} /## Summary/{p=1; next} /^## /{p=0} p{print}' \
       | sed -E 's/^- /  • /')
     echo "#${pr}  ${title:-<no title>}"
