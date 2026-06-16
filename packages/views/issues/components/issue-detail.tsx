@@ -432,7 +432,7 @@ function ScrollToBottomButton({
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center">
       <Button
-        variant="secondary"
+        variant="default"
         size="sm"
         aria-hidden={!visible}
         tabIndex={visible ? 0 : -1}
@@ -440,7 +440,7 @@ function ScrollToBottomButton({
           scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: "smooth" })
         }
         className={cn(
-          "gap-1.5 rounded-full border bg-background/95 shadow-md backdrop-blur transition-all duration-200",
+          "gap-1.5 rounded-full border border-primary/20 shadow-lg transition-all duration-200",
           visible
             ? "pointer-events-auto translate-y-0 opacity-100"
             : "pointer-events-none translate-y-2 opacity-0",
