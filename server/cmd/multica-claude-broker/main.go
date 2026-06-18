@@ -19,19 +19,40 @@ import (
 var version = "dev"
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	if err := run(logger); err != nil {
+	cfg, cfgErr := LoadConfig()
+	logger := newLogger(cfg)
+	if cfgErr != nil {
+		logger.Error("load config", "error", cfgErr)
+		os.Exit(1)
+	}
+	if err := run(logger, cfg); err != nil {
 		logger.Error("broker exited with error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger) error {
-	cfg, err := LoadConfig()
-	if err != nil {
-		return err
+// newLogger builds the process logger from config. A nil cfg (LoadConfig
+// failed before we could read the log knobs) falls back to info/text so the
+// failure itself is still reported. Debug level also turns on source
+// locations, since that's exactly when file:line is worth the extra width.
+func newLogger(cfg *Config) *slog.Logger {
+	level := slog.LevelInfo
+	format := "text"
+	if cfg != nil {
+		level = cfg.LogLevel
+		format = cfg.LogFormat
 	}
+	opts := &slog.HandlerOptions{Level: level, AddSource: level <= slog.LevelDebug}
+	var h slog.Handler
+	if format == "json" {
+		h = slog.NewJSONHandler(os.Stderr, opts)
+	} else {
+		h = slog.NewTextHandler(os.Stderr, opts)
+	}
+	return slog.New(h)
+}
 
+func run(logger *slog.Logger, cfg *Config) error {
 	restCfg, err := rest.InClusterConfig()
 	if err != nil {
 		return fmt.Errorf("in-cluster config: %w", err)
@@ -48,9 +69,17 @@ func run(logger *slog.Logger) error {
 	logger.Info("broker starting",
 		"version", version,
 		"claude_version", Constants.ClaudeVersion,
+		"extracted_at", Constants.ExtractedAt,
 		"identity", identity,
 		"namespace", cfg.Namespace,
 		"secret", cfg.SecretName,
+		"access_token_secret", cfg.AccessTokenSecret,
+		"lease", cfg.LeaseName,
+		"refresh_pad", cfg.RefreshPad.String(),
+		"refresh_interval", cfg.RefreshInterval.String(),
+		"usage_interval", cfg.UsageInterval.String(),
+		"log_level", cfg.LogLevel.String(),
+		"log_format", cfg.LogFormat,
 	)
 
 	store := NewSecretStore(k, cfg.Namespace, cfg.SecretName, cfg.AccessTokenSecret)
@@ -67,6 +96,7 @@ func run(logger *slog.Logger) error {
 		leaderStateGauge.Set(0)
 	}
 	oauth := DefaultOAuthClient()
+	oauth.Logger = logger
 	refresher := NewRefresher(store, leader, oauth, cfg.RefreshPad)
 	broker := NewBroker(refresher, store, logger)
 
@@ -93,12 +123,12 @@ func run(logger *slog.Logger) error {
 
 	adminSrv := &http.Server{
 		Addr:              cfg.AdminAddr,
-		Handler:           NewAdminMux(broker),
+		Handler:           withRequestLogging(logger, "admin", NewAdminMux(broker)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	opsSrv := &http.Server{
 		Addr:              cfg.OpsAddr,
-		Handler:           NewOpsMux(broker),
+		Handler:           withRequestLogging(logger, "ops", NewOpsMux(broker)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	metricsSrv := &http.Server{

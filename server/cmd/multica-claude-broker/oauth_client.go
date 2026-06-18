@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"time"
@@ -66,6 +67,19 @@ type OAuthClient struct {
 	HTTP        *http.Client
 	MaxAttempts int           // total tries including the first; default 4
 	BackoffBase time.Duration // first-retry jittered in [0, base]; default 500ms
+
+	// Logger receives debug traces of each attempt and retry. Optional — nil
+	// is treated as "discard", so tests and the zero value stay silent.
+	Logger *slog.Logger
+}
+
+// log returns the configured logger or a discard logger when none is set, so
+// callers never have to nil-check.
+func (c *OAuthClient) log() *slog.Logger {
+	if c.Logger != nil {
+		return c.Logger
+	}
+	return slog.New(slog.DiscardHandler)
 }
 
 // DefaultOAuthClient wires the broker's runtime client to the embedded constants.
@@ -101,9 +115,11 @@ func (c *OAuthClient) Refresh(ctx context.Context, refreshToken string) (*Refres
 		maxAttempts = 1
 	}
 
+	log := c.log()
 	var lastTransient error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
+			log.Debug("oauth refresh retrying", "attempt", attempt, "max_attempts", maxAttempts)
 			if err := sleepWithJitter(ctx, c.BackoffBase, attempt-1); err != nil {
 				return nil, &TransientError{Attempts: attempt - 1, LastErr: err}
 			}
@@ -112,14 +128,17 @@ func (c *OAuthClient) Refresh(ctx context.Context, refreshToken string) (*Refres
 		result, kind, err := c.doOnce(ctx, body)
 		switch kind {
 		case outcomeOK:
+			log.Debug("oauth refresh ok", "attempt", attempt, "expires_in_seconds", result.ExpiresIn)
 			return result, nil
 		case outcomePermanent:
+			log.Debug("oauth refresh permanent failure", "attempt", attempt, "error", err)
 			var perm *PermanentError
 			if errors.As(err, &perm) {
 				return nil, perm
 			}
 			return nil, &PermanentError{Wrapped: err}
 		case outcomeTransient:
+			log.Debug("oauth refresh transient failure", "attempt", attempt, "max_attempts", maxAttempts, "error", err)
 			lastTransient = err
 			continue
 		}

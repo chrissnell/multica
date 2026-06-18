@@ -276,6 +276,8 @@ runtime:
     image: { name: multica-claude-broker, tag: "" }   # "" → falls back to image.tag
     refreshPad: 5m         # refresh when expires_at - now < refreshPad
     refreshInterval: 60s   # how often the refresh loop ticks
+    logLevel: info         # debug|info|warn|error — debug adds per-request and per-tick traces + source locations
+    logFormat: text        # text|json — set json to feed a log aggregator (Loki/ELK)
     leaseName: multica-claude-broker-refresh    # coordination.k8s.io/Lease for leader election
     secretName: multica-claude-oauth-broker     # the broker's own state secret (3 keys: access, refresh, expires_at)
     accessTokenSecret: multica-claude-broker-access-token  # mirror secret consumed by worker pods (1 key: access_token)

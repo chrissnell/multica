@@ -64,6 +64,22 @@ func (p *UsagePoller) tick(ctx context.Context) {
 	usagePollTotal.WithLabelValues(outcomeOk).Inc()
 	observeUsage(snap)
 	p.broker.setUsage(snap)
+	p.broker.logger.Debug("usage poll ok",
+		"five_hour", windowUtil(snap.FiveHour),
+		"seven_day", windowUtil(snap.SevenDay),
+		"seven_day_opus", windowUtil(snap.SevenDayOpus),
+		"seven_day_sonnet", windowUtil(snap.SevenDaySonnet),
+		"fetched_at", snap.FetchedAt)
+}
+
+// windowUtil returns the window's utilization percent, or -1 when the plan
+// doesn't expose that window, so a debug line can distinguish "0% used" from
+// "not reported".
+func windowUtil(w *UsageWindow) float64 {
+	if w == nil {
+		return -1
+	}
+	return w.Utilization
 }
 
 func (b *Broker) setUsage(snap *UsageSnapshot) {

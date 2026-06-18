@@ -95,10 +95,16 @@ func (b *Broker) tickRefresh(ctx context.Context) {
 		// the leader has rotated the Secret out from under it.
 		if state != nil {
 			b.setCached(state)
+			if !state.ExpiresAt.IsZero() {
+				b.logger.Debug("refresh skipped; token still fresh",
+					"expires_at", state.ExpiresAt,
+					"expires_in", time.Until(state.ExpiresAt).Truncate(time.Second).String())
+			}
 		}
 	case errors.Is(err, ErrNotLeader):
 		refreshTotal.WithLabelValues(outcomeSkipped).Inc()
 		refreshFailures.WithLabelValues("not_leader").Inc()
+		b.logger.Debug("refresh skipped; this pod is not the leader")
 	default:
 		refreshTotal.WithLabelValues(outcomeError).Inc()
 		var perm *PermanentError
@@ -222,6 +228,11 @@ func (b *Broker) accessTokenHandler(w http.ResponseWriter, r *http.Request) {
 				"remaining", remaining.Truncate(time.Second).String(), "expires_at", state.ExpiresAt,
 				"leader", b.refresher.leader.IsLeader())
 		}
+	}
+	if !state.ExpiresAt.IsZero() {
+		b.logger.Debug("serving access_token",
+			"expires_at", state.ExpiresAt,
+			"expires_in", time.Until(state.ExpiresAt).Truncate(time.Second).String())
 	}
 	accessTokenRequestsTotal.WithLabelValues(outcomeOk).Inc()
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
