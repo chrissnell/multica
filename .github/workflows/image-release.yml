@@ -201,5 +201,22 @@ jobs:
                      -m "$(printf 'images:\n'; jq -r '."containerimage.digest"' /tmp/digests/*.json 2>/dev/null | head)" \
             || { echo "::error::nothing to commit — digest pin step did not modify values.yaml" >&2; exit 1; }
           git tag -a "${{ steps.bump.outputs.tag }}" -m "Released by image-release.yml (run ${{ github.run_id }})"
-          git push origin HEAD:main
+          # Race: main may have advanced during the 5-10 min build/rollout
+          # window (e.g. an unrelated PR merge). The bot's commit only
+          # touches packaging/image-tag and deploy/farm-talos/values.yaml,
+          # which CODEOWNERS reserves for this workflow, so a rebase over
+          # any concurrent change is conflict-free by construction. Retry
+          # once in case a second race lands between fetch and push.
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git rebase origin/main
+            if git push origin HEAD:main; then
+              break
+            fi
+            if [ "$attempt" = "3" ]; then
+              echo "::error::failed to push release commit after 3 attempts" >&2
+              exit 1
+            fi
+            echo "::notice::push rejected (attempt $attempt), refetching and retrying"
+          done
           git push origin "${{ steps.bump.outputs.tag }}"
