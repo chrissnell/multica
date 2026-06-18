@@ -105,6 +105,47 @@ build_runtime() {
   echo "    golangci-lint=$golangci_lint_version ktlint=$ktlint_version"
   echo "    kubectl=$kubectl_version helm=$helm_version gh=$gh_version"
   echo "    wrangler=$wrangler_version rclone=$rclone_version"
+
+  if [[ -n "${BUILDKIT_ADDR:-}" ]]; then
+    # CI path: in-cluster buildkitd, no local docker daemon. push=true is
+    # required on the base so the claude stage can pull it as FROM in a
+    # separate buildctl invocation.
+    if [[ "$push" -ne 1 ]]; then
+      echo "BUILDKIT_ADDR is set but --no-push was passed; runtime needs push for the two-stage chain" >&2
+      exit 1
+    fi
+    buildctl --addr "$BUILDKIT_ADDR" build \
+      --frontend dockerfile.v0 \
+      --local context=. \
+      --local dockerfile=packaging/docker/runtime \
+      --opt filename=Dockerfile.base \
+      --opt platform="$platform" \
+      --opt build-arg:VERSION="$version" \
+      --opt build-arg:COMMIT="$commit" \
+      --opt build-arg:RUST_VERSION="$rust_version" \
+      --opt build-arg:KOTLIN_VERSION="$kotlin_version" \
+      --opt build-arg:GOLANGCI_LINT_VERSION="$golangci_lint_version" \
+      --opt build-arg:KTLINT_VERSION="$ktlint_version" \
+      --opt build-arg:PNPM_VERSION="$pnpm_version" \
+      --opt build-arg:KUBECTL_VERSION="$kubectl_version" \
+      --opt build-arg:HELM_VERSION="$helm_version" \
+      --opt build-arg:GH_VERSION="$gh_version" \
+      --opt build-arg:WRANGLER_VERSION="$wrangler_version" \
+      --opt build-arg:RCLONE_VERSION="$rclone_version" \
+      --output "type=image,name=$base,push=true"
+    echo "==> Building $claude (FROM $base, claude-code=$claude_code_version)"
+    buildctl --addr "$BUILDKIT_ADDR" build \
+      --frontend dockerfile.v0 \
+      --local context=. \
+      --local dockerfile=packaging/docker/runtime \
+      --opt filename=Dockerfile.claude \
+      --opt platform="$platform" \
+      --opt build-arg:BASE_IMAGE="$base" \
+      --opt build-arg:CLAUDE_CODE_VERSION="$claude_code_version" \
+      --output "type=image,name=$claude,push=true"
+    return
+  fi
+
   docker build --platform "$platform" \
     --build-arg VERSION="$version" \
     --build-arg COMMIT="$commit" \
