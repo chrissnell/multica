@@ -84,7 +84,11 @@ func (b *Broker) tickRefresh(ctx context.Context) {
 		if err := b.store.MirrorAccessToken(ctx, state.AccessToken); err != nil {
 			b.logger.Warn("mirror access_token after refresh failed", "error", err)
 		}
-		b.logger.Info("refresh ok", "expires_at", state.ExpiresAt)
+		b.logger.Info("access_token refreshed",
+			"result", "success",
+			"trigger", "scheduled",
+			"expires_at", state.ExpiresAt,
+			"valid_for", time.Until(state.ExpiresAt).Truncate(time.Second).String())
 	case err == nil && !refreshed:
 		refreshTotal.WithLabelValues(outcomeSkipped).Inc()
 		// No rotation happened, but RefreshIfNeeded handed back the state it
@@ -112,13 +116,16 @@ func (b *Broker) tickRefresh(ctx context.Context) {
 		switch {
 		case errors.As(err, &perm):
 			refreshFailures.WithLabelValues("permanent").Inc()
-			b.logger.Error("refresh failed (permanent)", "error", err)
+			b.logger.Error("access_token refresh failed",
+				"result", "failed", "trigger", "scheduled", "kind", "permanent", "error", err)
 		case errors.As(err, &transient):
 			refreshFailures.WithLabelValues("transient").Inc()
-			b.logger.Warn("refresh failed (transient)", "error", err)
+			b.logger.Warn("access_token refresh failed",
+				"result", "failed", "trigger", "scheduled", "kind", "transient", "error", err)
 		default:
 			refreshFailures.WithLabelValues("other").Inc()
-			b.logger.Warn("refresh failed", "error", err)
+			b.logger.Warn("access_token refresh failed",
+				"result", "failed", "trigger", "scheduled", "kind", "other", "error", err)
 		}
 	}
 }
@@ -256,16 +263,22 @@ func (b *Broker) refreshHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !b.refresher.leader.IsLeader() {
+		b.logger.Info("manual access_token refresh rejected; this pod is not the leader")
 		http.Error(w, "not the leader; refresh routed to leader pod required", http.StatusServiceUnavailable)
 		return
 	}
+	b.logger.Info("manual access_token refresh requested")
 	res, err := b.refresher.oauth.Refresh(r.Context(), state.RefreshToken)
 	if err != nil {
 		var perm *PermanentError
 		status := http.StatusBadGateway
+		kind := "transient"
 		if errors.As(err, &perm) {
 			status = http.StatusBadRequest
+			kind = "permanent"
 		}
+		b.logger.Error("access_token refresh failed",
+			"result", "failed", "trigger", "manual", "kind", kind, "error", err)
 		http.Error(w, err.Error(), status)
 		return
 	}
@@ -286,6 +299,11 @@ func (b *Broker) refreshHandler(w http.ResponseWriter, r *http.Request) {
 		b.logger.Warn("mirror access_token after manual refresh failed", "error", err)
 	}
 	refreshTotal.WithLabelValues(outcomeOk).Inc()
+	b.logger.Info("access_token refreshed",
+		"result", "success",
+		"trigger", "manual",
+		"expires_at", newState.ExpiresAt,
+		"valid_for", time.Until(newState.ExpiresAt).Truncate(time.Second).String())
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprintf(w, "refreshed; expires_at=%s\n", newState.ExpiresAt.Format(time.RFC3339))
 }

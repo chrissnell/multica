@@ -1,9 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +18,13 @@ import (
 )
 
 func newTestBroker(t *testing.T, initial *TokenState, isLeader bool, anthropicSrv string) (*Broker, *fake.Clientset) {
+	b, k, _ := newTestBrokerWithLog(t, initial, isLeader, anthropicSrv)
+	return b, k
+}
+
+// newTestBrokerWithLog is newTestBroker plus a captured log buffer, so tests
+// can assert on the broker's structured output (e.g. refresh result lines).
+func newTestBrokerWithLog(t *testing.T, initial *TokenState, isLeader bool, anthropicSrv string) (*Broker, *fake.Clientset, *bytes.Buffer) {
 	t.Helper()
 	sec := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "ns"},
@@ -31,12 +38,13 @@ func newTestBroker(t *testing.T, initial *TokenState, isLeader bool, anthropicSr
 	store := NewSecretStore(k, "ns", "s", "ns-access-token")
 	oauth := newClientForTest(anthropicSrv, "client-id-x", "oauth-2025-04-20")
 	refresher := NewRefresher(store, &stubLeader{leader: isLeader}, oauth, 5*time.Minute)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	b := NewBroker(refresher, store, logger)
 	if err := b.Reload(context.Background()); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	return b, k
+	return b, k, &buf
 }
 
 func TestAdminMux_AccessTokenFresh_NoRefresh(t *testing.T) {
@@ -83,6 +91,71 @@ func TestAdminMux_AccessTokenStale_RefreshesAndServes(t *testing.T) {
 	}
 	if atomic.LoadInt32(&calls) != 1 {
 		t.Errorf("upstream calls = %d, want 1", atomic.LoadInt32(&calls))
+	}
+}
+
+func TestTickRefresh_LogsSuccessResult(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "ROTATED", "refresh_token": "R2", "expires_in": 3600,
+		})
+	}))
+	defer srv.Close()
+	state := &TokenState{AccessToken: "OLD", RefreshToken: "R", ExpiresAt: time.Now().Add(1 * time.Minute)}
+	b, _, buf := newTestBrokerWithLog(t, state, true, srv.URL)
+
+	w := httptest.NewRecorder()
+	NewAdminMux(b).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/access_token", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	out := buf.String()
+	for _, want := range []string{`msg="access_token refreshed"`, "result=success", "trigger=scheduled", "valid_for="} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log missing %q; got: %s", want, out)
+		}
+	}
+}
+
+func TestTickRefresh_LogsFailureResult(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest) // 4xx → permanent
+	}))
+	defer srv.Close()
+	state := &TokenState{AccessToken: "OLD", RefreshToken: "R", ExpiresAt: time.Now().Add(1 * time.Minute)}
+	b, _, buf := newTestBrokerWithLog(t, state, true, srv.URL)
+
+	w := httptest.NewRecorder()
+	NewAdminMux(b).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/access_token", nil))
+
+	out := buf.String()
+	for _, want := range []string{`msg="access_token refresh failed"`, "result=failed", "kind=permanent"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log missing %q; got: %s", want, out)
+		}
+	}
+}
+
+func TestOpsMux_RefreshLogsSuccessResult(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "FORCED", "refresh_token": "R2", "expires_in": 3600,
+		})
+	}))
+	defer srv.Close()
+	state := &TokenState{AccessToken: "FRESH", RefreshToken: "R", ExpiresAt: time.Now().Add(1 * time.Hour)}
+	b, _, buf := newTestBrokerWithLog(t, state, true, srv.URL)
+
+	w := httptest.NewRecorder()
+	NewOpsMux(b).ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/refresh", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body)
+	}
+	out := buf.String()
+	for _, want := range []string{`msg="access_token refreshed"`, "result=success", "trigger=manual"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log missing %q; got: %s", want, out)
+		}
 	}
 }
 
