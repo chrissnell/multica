@@ -222,12 +222,27 @@ function collectLinkifyMatches(text: string, offset: number, out: DetectedLink[]
     if (cjkIdx === 0) continue // match starts with CJK punct — skip
 
     const truncate = cjkIdx > 0
-    const matchText = truncate ? match.text.slice(0, cjkIdx) : match.text
+    const cjkText = truncate ? match.text.slice(0, cjkIdx) : match.text
+
+    // linkify-it treats "*" as a valid URL path character, so a URL wrapped in
+    // markdown bold/italic (e.g. **https://example.com/x**) swallows the trailing
+    // asterisks into the href — producing a 404 link and consuming the emphasis
+    // markers so the text never renders bold. Trim trailing asterisks so the
+    // delimiters survive for the markdown parser. (Underscore/tilde wrappers are
+    // not matched by linkify-it at all, so they need no handling here.)
+    // Trade-off: a genuine URL ending in "*" loses it, but in markdown prose a
+    // trailing "*" is overwhelmingly an emphasis marker, so favoring that case
+    // is correct — asterisks elsewhere in the path are untouched.
+    const matchText = cjkText.replace(/\*+$/, '')
+    if (matchText.length === 0) continue // nothing left after trimming
+
+    const trimmed = truncate || matchText.length !== match.text.length
     // linkify-it may prepend a scheme (e.g. "http://" or "mailto:") to url
     // while leaving text as the raw substring. Preserve that prefix.
     const schemePrefix = match.url.slice(0, match.url.length - match.text.length)
-    const matchUrl = truncate ? schemePrefix + matchText : match.url
-    const matchEnd = truncate ? match.index + cjkIdx : match.lastIndex
+    const matchUrl = trimmed ? schemePrefix + matchText : match.url
+    const matchEnd =
+      (truncate ? match.index + cjkIdx : match.lastIndex) - (cjkText.length - matchText.length)
 
     out.push({
       type: match.schema === 'mailto:' ? 'email' : 'url',
@@ -240,7 +255,7 @@ function collectLinkifyMatches(text: string, offset: number, out: DetectedLink[]
     if (truncate) {
       // Rescan the tail after the CJK punct — linkify-it had greedily swallowed
       // it, so any additional URLs after the punct were never emitted.
-      const tailStart = matchEnd + 1
+      const tailStart = match.index + cjkIdx + 1
       collectLinkifyMatches(text.slice(tailStart), offset + tailStart, out)
       return
     }

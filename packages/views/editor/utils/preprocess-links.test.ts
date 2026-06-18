@@ -93,3 +93,53 @@ describe("preprocessLinks — CJK punctuation boundary", () => {
     );
   });
 });
+
+// The bug: linkify-it treats "*" as a valid URL path character, so a URL
+// wrapped in markdown bold/italic markers (**url**) swallows the trailing
+// asterisks into the href. The link then 404s and the emphasis markers are
+// consumed instead of rendering the text bold. The fix trims trailing
+// asterisks off the detected URL so the delimiters survive for the parser.
+describe("preprocessLinks — markdown emphasis delimiter boundary", () => {
+  it("does not swallow trailing ** from a bold-wrapped URL (original report)", () => {
+    const out = preprocessLinks("**https://github.com/chrissnell/omnimodem/pull/6**");
+    expect(out).toBe(
+      "**[https://github.com/chrissnell/omnimodem/pull/6](https://github.com/chrissnell/omnimodem/pull/6)**",
+    );
+  });
+
+  it("does not swallow a single trailing * from an italic-wrapped URL", () => {
+    const out = preprocessLinks("*https://example.com/foo*");
+    expect(out).toBe("*[https://example.com/foo](https://example.com/foo)*");
+  });
+
+  it("handles a bold URL inside surrounding prose", () => {
+    const out = preprocessLinks("See **https://example.com/a/b** for details");
+    expect(out).toBe(
+      "See **[https://example.com/a/b](https://example.com/a/b)** for details",
+    );
+  });
+
+  it("trims trailing asterisks from a fuzzy (schemeless) bold URL", () => {
+    const out = preprocessLinks("**example.com/path**");
+    expect(out).toBe("**[example.com/path](http://example.com/path)**");
+  });
+
+  it("preserves a plain URL with no trailing asterisks (no regression)", () => {
+    const out = preprocessLinks("go https://example.com/path");
+    expect(out).toBe("go [https://example.com/path](https://example.com/path)");
+  });
+
+  it("trims asterisks from multiple bold URLs on the same line", () => {
+    const out = preprocessLinks("**https://x.com/p** and **https://y.com/q**");
+    expect(out).toBe(
+      "**[https://x.com/p](https://x.com/p)** and **[https://y.com/q](https://y.com/q)**",
+    );
+  });
+
+  it("strips asterisks but keeps CJK boundary handling intact", () => {
+    const out = preprocessLinks("**https://example.com/x**。后文");
+    expect(out).toBe(
+      "**[https://example.com/x](https://example.com/x)**。后文",
+    );
+  });
+});
