@@ -73,6 +73,8 @@ func TestVersionHeaderExtractor(t *testing.T) {
 func TestClientIDExtractor(t *testing.T) {
 	const anchor = "platform.claude.com/oauth/code/callback"
 	const goodUUID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	const designUUID = "59637612-477b-4836-a601-b0589eda7704"
+	const localUUID = "22422756-60c9-4084-8eb7-27705fd5cf9a"
 	const otherUUID = "00000000-1111-2222-3333-444444444444"
 
 	cases := []struct {
@@ -82,33 +84,47 @@ func TestClientIDExtractor(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "happy path",
+			// claude >= 2.1.181 emits DESIGN_CLIENT_ID next to CLIENT_ID; the
+			// whole-token match must take CLIENT_ID and skip the sibling.
+			name: "happy path with sibling DESIGN_CLIENT_ID",
 			hits: []StringHit{
 				{Offset: 1000, Value: "...some other string..."},
-				{Offset: 1500, Value: anchor},
-				{Offset: 1700, Value: goodUUID},
+				{Offset: 1500, Value: `MANUAL_REDIRECT_URL:"https://` + anchor +
+					`",CLIENT_ID:"` + goodUUID + `",DESIGN_CLIENT_ID:"` + designUUID + `"`},
 			},
 			want: goodUUID,
 		},
 		{
-			name: "uuid too far from anchor",
+			// Several config blocks share one string run in the real binary.
+			// The local block lacks the literal anchor and its CLIENT_ID sits
+			// outside the window, so only the production block is selected.
+			name: "production block selected among multiple blocks",
+			hits: []StringHit{
+				{Offset: 0, Value: "MANUAL_REDIRECT_URL:`${n}/oauth/code/callback`,CLIENT_ID:\"" +
+					localUUID + "\"," + strings.Repeat("x", 600) +
+					`MANUAL_REDIRECT_URL:"https://` + anchor + `",CLIENT_ID:"` + goodUUID + `"`},
+			},
+			want: goodUUID,
+		},
+		{
+			name: "client_id field too far from anchor",
 			hits: []StringHit{
 				{Offset: 1500, Value: anchor},
-				{Offset: 100000, Value: goodUUID},
+				{Offset: 100000, Value: `CLIENT_ID:"` + goodUUID + `"`},
 			},
-			wantErr: "no UUID found within",
+			wantErr: "no CLIENT_ID field within",
 		},
 		{
 			name:    "anchor missing",
-			hits:    []StringHit{{Offset: 1700, Value: goodUUID}},
+			hits:    []StringHit{{Offset: 1700, Value: `CLIENT_ID:"` + goodUUID + `"`}},
 			wantErr: "anchor",
 		},
 		{
 			name: "ambiguous",
 			hits: []StringHit{
 				{Offset: 1500, Value: anchor},
-				{Offset: 1700, Value: goodUUID},
-				{Offset: 1900, Value: otherUUID},
+				{Offset: 1600, Value: `CLIENT_ID:"` + goodUUID + `"`},
+				{Offset: 1700, Value: `CLIENT_ID:"` + otherUUID + `"`},
 			},
 			wantErr: "ambiguous",
 		},
@@ -147,8 +163,7 @@ func TestRun_MultiFailureReporting(t *testing.T) {
 	hits := []StringHit{
 		{Offset: 100, Value: "api.anthropic.com"},
 		{Offset: 200, Value: "user:profile user:inference user:sessions:claude_code user:mcp_servers"},
-		{Offset: 1500, Value: "platform.claude.com/oauth/code/callback"},
-		{Offset: 1700, Value: "9d1c250a-e61b-44d9-88ed-5944d1962f5e"},
+		{Offset: 1500, Value: `MANUAL_REDIRECT_URL:"https://platform.claude.com/oauth/code/callback",CLIENT_ID:"9d1c250a-e61b-44d9-88ed-5944d1962f5e"`},
 	}
 	_, errs := Run(hits)
 	if len(errs) < 2 {
