@@ -44,7 +44,7 @@ setup_stubs() {
 case "$*" in
   "describe --tags --match v*-mk* --abbrev=0")
     echo "v0.4.0-mk10" ;;
-  "log --merges --pretty=%s v0.4.0-mk10..HEAD")
+  "log --pretty=%s v0.4.0-mk10..HEAD")
     cat <<'LOG'
 Merge pull request #42 from foo/bar
 Merge pull request #43 from baz/qux
@@ -86,7 +86,7 @@ test_preflight_handles_escaped_quotes_in_pr_body() {
 #!/usr/bin/env bash
 case "$*" in
   "describe --tags --match v*-mk* --abbrev=0") echo "v0.4.0-mk10" ;;
-  "log --merges --pretty=%s v0.4.0-mk10..HEAD") echo "Merge pull request #99 from x/y" ;;
+  "log --pretty=%s v0.4.0-mk10..HEAD") echo "Merge pull request #99 from x/y" ;;
   "log --oneline v0.4.0-mk10..HEAD") echo "abc commit a" ;;
   *) echo "unhandled git: $*" >&2; exit 99 ;;
 esac
@@ -110,6 +110,52 @@ STUB
   out=$(PATH="$stubs:$PATH" "$SCRIPT" --no-confirm 2>&1)
   assert_contains "title with escaped quotes preserved" "$out" 'fix: handle "foo" correctly'
   assert_contains "body with escaped quotes preserved" "$out" 'replaces sed with jq for the "strict" parser'
+  rm -rf "$stubs"
+}
+
+test_preflight_handles_squash_merge_style() {
+  # GitHub's default merge mode in this repo is squash. Squash merges land as
+  # single-parent commits with subjects like "fix(foo): bar (#52)". An earlier
+  # version of the script filtered with `git log --merges`, which silently
+  # dropped every squash-merged PR and reported "0 PRs" at preflight.
+  echo "test_preflight_handles_squash_merge_style"
+  local stubs
+  stubs=$(mktemp -d)
+  cat > "$stubs/git" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  "describe --tags --match v*-mk* --abbrev=0") echo "v0.4.0-mk10" ;;
+  "log --pretty=%s v0.4.0-mk10..HEAD")
+    cat <<'LOG'
+fix(issues): scroll button (#52)
+fix(cluster): buildkit cache (#51)
+chore(release): v0.4.0-mk13 [skip ci]
+LOG
+    ;;
+  "log --oneline v0.4.0-mk10..HEAD")
+    echo "abc commit a"
+    echo "def commit b"
+    echo "ghi commit c" ;;
+  *) echo "unhandled git: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$stubs/git"
+  cat > "$stubs/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  "pr view 51 --json title,body")
+    echo '{"title":"buildkit cache fix","body":"## Summary\n- moves cache off NFS"}' ;;
+  "pr view 52 --json title,body")
+    echo '{"title":"scroll button restyle","body":"## Summary\n- darker background"}' ;;
+  *) echo "unhandled gh: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$stubs/gh"
+  local out
+  out=$(PATH="$stubs:$PATH" "$SCRIPT" --no-confirm 2>&1)
+  assert_contains "squash PR 51 listed" "$out" "buildkit cache fix"
+  assert_contains "squash PR 52 listed" "$out" "scroll button restyle"
+  assert_contains "release-bump commit not counted as a PR" "$out" "2 PRs"
   rm -rf "$stubs"
 }
 
@@ -163,6 +209,7 @@ test_preflight_aborts_on_blank() {
 
 main() {
   test_preflight_handles_escaped_quotes_in_pr_body
+  test_preflight_handles_squash_merge_style
   test_preflight_lists_prs
   test_preflight_confirms_y
   test_preflight_aborts_on_n

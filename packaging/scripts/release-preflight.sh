@@ -22,10 +22,13 @@ LAST_TAG=$(git describe --tags --match 'v*-mk*' --abbrev=0)
 COMMITS=$(git log --oneline "${LAST_TAG}..HEAD")
 COMMIT_COUNT=$(printf '%s\n' "$COMMITS" | grep -c . || true)
 
-# Extract PR numbers from merge subjects. Handles both "Merge pull request #N"
-# (queue-merge) and "(#N)" (squash-merge) styles.
-PR_NUMBERS=$(git log --merges --pretty=%s "${LAST_TAG}..HEAD" \
-  | sed -nE 's/.*#([0-9]+).*/\1/p' \
+# Extract PR numbers from commit subjects. Handles "Merge pull request #N"
+# (true-merge) and trailing "(#N)" (squash-merge, GitHub's default) styles.
+# Don't use --merges: squash merges land as single-parent commits and would
+# be silently dropped.
+PR_NUMBERS=$(git log --pretty=%s "${LAST_TAG}..HEAD" \
+  | sed -nE -e 's/^Merge pull request #([0-9]+).*/\1/p' \
+            -e 's/.*\(#([0-9]+)\)$/\1/p' \
   | sort -un)
 
 PR_COUNT=0
