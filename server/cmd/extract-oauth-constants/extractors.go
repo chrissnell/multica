@@ -107,17 +107,36 @@ func versionHeaderExtractor() Extractor {
 }
 
 func clientIDExtractor() Extractor {
-	uuidRE := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	// The bundled JS carries several OAuth config objects (local, staging,
+	// production). Only the production object embeds its URLs as string
+	// literals — the others build them from template variables — so the literal
+	// callback URL uniquely marks the production block. Within that block the
+	// client id is the value of the CLIENT_ID field.
+	//
+	// Two field-level hazards drive the rest of the logic:
+	//   - claude 2.1.181 added a sibling DESIGN_CLIENT_ID field right next to
+	//     CLIENT_ID, so we match CLIENT_ID as a whole token. RE2 has no
+	//     lookbehind, hence the consuming non-word prefix that rejects any
+	//     *_CLIENT_ID (DESIGN_CLIENT_ID, etc).
+	//   - every block has its own CLIENT_ID, so we keep only the field within a
+	//     small window of the production anchor; the other blocks sit thousands
+	//     of bytes away.
 	const anchor = "platform.claude.com/oauth/code/callback"
-	const window = 1024
+	const window = 512
+	clientIDRE := regexp.MustCompile(`(?:^|[^0-9A-Za-z_])CLIENT_ID:"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"`)
 	return Extractor{
 		Name: "client_id",
-		Doc:  fmt.Sprintf("UUID found within %d bytes of the production OAuth callback URL.", window),
+		Doc:  fmt.Sprintf("Value of the CLIENT_ID field within %d bytes of the production OAuth callback URL.", window),
 		Run: func(hits []StringHit) (string, error) {
 			var anchors []int64
 			for _, h := range hits {
-				if strings.Contains(h.Value, anchor) {
-					anchors = append(anchors, h.Offset)
+				for i := 0; ; {
+					idx := strings.Index(h.Value[i:], anchor)
+					if idx < 0 {
+						break
+					}
+					anchors = append(anchors, h.Offset+int64(i+idx))
+					i += idx + 1
 				}
 			}
 			if len(anchors) == 0 {
@@ -125,20 +144,20 @@ func clientIDExtractor() Extractor {
 			}
 			set := map[string]struct{}{}
 			for _, h := range hits {
-				if !uuidRE.MatchString(h.Value) {
-					continue
-				}
-				for _, a := range anchors {
-					if abs64(h.Offset-a) <= window {
-						set[h.Value] = struct{}{}
-						break
+				for _, m := range clientIDRE.FindAllStringSubmatchIndex(h.Value, -1) {
+					off := h.Offset + int64(m[2])
+					for _, a := range anchors {
+						if abs64(off-a) <= window {
+							set[h.Value[m[2]:m[3]]] = struct{}{}
+							break
+						}
 					}
 				}
 			}
 			keys := sortedKeys(set)
 			switch len(keys) {
 			case 0:
-				return "", fmt.Errorf("no UUID found within %d bytes of anchor %q", window, anchor)
+				return "", fmt.Errorf("no CLIENT_ID field within %d bytes of anchor %q", window, anchor)
 			case 1:
 				return keys[0], nil
 			default:
