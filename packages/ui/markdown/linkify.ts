@@ -230,6 +230,9 @@ function collectLinkifyMatches(text: string, offset: number, out: DetectedLink[]
     // markers so the text never renders bold. Trim trailing asterisks so the
     // delimiters survive for the markdown parser. (Underscore/tilde wrappers are
     // not matched by linkify-it at all, so they need no handling here.)
+    // Trade-off: a genuine URL ending in "*" loses it, but in markdown prose a
+    // trailing "*" is overwhelmingly an emphasis marker, so favoring that case
+    // is correct — asterisks elsewhere in the path are untouched.
     const matchText = cjkText.replace(/\*+$/, '')
     if (matchText.length === 0) continue // nothing left after trimming
 

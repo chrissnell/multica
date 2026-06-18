@@ -129,6 +129,13 @@ describe("preprocessLinks — markdown emphasis delimiter boundary", () => {
     expect(out).toBe("go [https://example.com/path](https://example.com/path)");
   });
 
+  it("trims asterisks from multiple bold URLs on the same line", () => {
+    const out = preprocessLinks("**https://x.com/p** and **https://y.com/q**");
+    expect(out).toBe(
+      "**[https://x.com/p](https://x.com/p)** and **[https://y.com/q](https://y.com/q)**",
+    );
+  });
+
   it("strips asterisks but keeps CJK boundary handling intact", () => {
     const out = preprocessLinks("**https://example.com/x**。后文");
     expect(out).toBe(
