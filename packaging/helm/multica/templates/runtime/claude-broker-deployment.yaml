@@ -63,6 +63,10 @@ spec:
               value: {{ .Values.runtime.claudeBroker.refreshInterval | quote }}
             - name: BROKER_LEASE_NAME
               value: {{ .Values.runtime.claudeBroker.leaseName | quote }}
+            - name: BROKER_LOG_LEVEL
+              value: {{ .Values.runtime.claudeBroker.logLevel | quote }}
+            - name: BROKER_LOG_FORMAT
+              value: {{ .Values.runtime.claudeBroker.logFormat | quote }}
           readinessProbe:
             httpGet: { path: /readyz, port: admin }
             initialDelaySeconds: 1

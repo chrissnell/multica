@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -28,6 +29,12 @@ type Config struct {
 	AdminAddr   string // cluster-reachable: GET /access_token, /healthz, /readyz
 	OpsAddr     string // loopback-only: POST /refresh (kubectl exec only)
 	MetricsAddr string // cluster-reachable: /metrics
+
+	// Observability. LogLevel gates verbosity (debug exposes per-request and
+	// per-refresh-tick traces); LogFormat picks text (default, human-readable)
+	// or json (for log aggregators like Loki/ELK).
+	LogLevel  slog.Level
+	LogFormat string // "text" | "json"
 }
 
 func LoadConfig() (*Config, error) {
@@ -40,6 +47,8 @@ func LoadConfig() (*Config, error) {
 		AdminAddr:       ":8080",
 		OpsAddr:         "127.0.0.1:8081",
 		MetricsAddr:     ":9090",
+		LogLevel:        slog.LevelInfo,
+		LogFormat:       "text",
 	}
 	cfg.Namespace = strings.TrimSpace(os.Getenv("POD_NAMESPACE"))
 	if cfg.Namespace == "" {
@@ -91,5 +100,38 @@ func LoadConfig() (*Config, error) {
 	if v := os.Getenv("BROKER_METRICS_ADDR"); v != "" {
 		cfg.MetricsAddr = v
 	}
+	if v := os.Getenv("BROKER_LOG_LEVEL"); v != "" {
+		lvl, err := parseLogLevel(v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.LogLevel = lvl
+	}
+	if v := os.Getenv("BROKER_LOG_FORMAT"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "text", "json":
+			cfg.LogFormat = strings.ToLower(strings.TrimSpace(v))
+		default:
+			return nil, fmt.Errorf("BROKER_LOG_FORMAT: unknown format %q (want text|json)", v)
+		}
+	}
 	return cfg, nil
+}
+
+// parseLogLevel maps the operator-facing level names to slog levels. Accepts
+// the four standard names case-insensitively; anything else is a hard error so
+// a typo surfaces at startup instead of silently defaulting to info.
+func parseLogLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf("BROKER_LOG_LEVEL: unknown level %q (want debug|info|warn|error)", s)
+	}
 }

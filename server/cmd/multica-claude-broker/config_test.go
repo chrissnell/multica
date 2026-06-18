@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -35,6 +36,67 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	}
 	if got.MetricsAddr != ":9090" {
 		t.Errorf("MetricsAddr default = %q", got.MetricsAddr)
+	}
+	if got.LogLevel != slog.LevelInfo {
+		t.Errorf("LogLevel default = %v, want info", got.LogLevel)
+	}
+	if got.LogFormat != "text" {
+		t.Errorf("LogFormat default = %q, want text", got.LogFormat)
+	}
+}
+
+func TestLoadConfig_LogOverrides(t *testing.T) {
+	t.Setenv("POD_NAMESPACE", "ns")
+	t.Setenv("BROKER_LOG_LEVEL", "DEBUG")
+	t.Setenv("BROKER_LOG_FORMAT", "json")
+	got, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got.LogLevel != slog.LevelDebug {
+		t.Errorf("LogLevel = %v, want debug", got.LogLevel)
+	}
+	if got.LogFormat != "json" {
+		t.Errorf("LogFormat = %q, want json", got.LogFormat)
+	}
+}
+
+func TestLoadConfig_BadLogLevel(t *testing.T) {
+	t.Setenv("POD_NAMESPACE", "ns")
+	t.Setenv("BROKER_LOG_LEVEL", "verbose")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("expected error for unknown log level")
+	}
+}
+
+func TestLoadConfig_BadLogFormat(t *testing.T) {
+	t.Setenv("POD_NAMESPACE", "ns")
+	t.Setenv("BROKER_LOG_FORMAT", "xml")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("expected error for unknown log format")
+	}
+}
+
+func TestParseLogLevel(t *testing.T) {
+	cases := map[string]slog.Level{
+		"debug":   slog.LevelDebug,
+		"INFO":    slog.LevelInfo,
+		"warn":    slog.LevelWarn,
+		"warning": slog.LevelWarn,
+		" Error ": slog.LevelError,
+	}
+	for in, want := range cases {
+		got, err := parseLogLevel(in)
+		if err != nil {
+			t.Errorf("parseLogLevel(%q): %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("parseLogLevel(%q) = %v, want %v", in, got, want)
+		}
+	}
+	if _, err := parseLogLevel("nope"); err == nil {
+		t.Error("expected error for unknown level")
 	}
 }
 
