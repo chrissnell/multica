@@ -430,7 +430,7 @@ function ScrollToBottomButton({
   if (!scrollEl) return null;
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center">
+    <div className="pointer-events-none absolute inset-x-0 bottom-6 z-20 flex justify-center">
       <Button
         variant="default"
         size="sm"
@@ -440,7 +440,10 @@ function ScrollToBottomButton({
           scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: "smooth" })
         }
         className={cn(
-          "gap-1.5 rounded-full border border-primary/20 shadow-lg transition-all duration-200",
+          // A solid primary pill with a background-colored halo (ring) so it
+          // reads as a distinct floating affordance instead of blending into
+          // the timeline text scrolling behind it.
+          "gap-1.5 rounded-full shadow-lg ring-2 ring-background transition-all duration-200 hover:shadow-xl",
           visible
             ? "pointer-events-auto translate-y-0 opacity-100"
             : "pointer-events-none translate-y-2 opacity-0",
