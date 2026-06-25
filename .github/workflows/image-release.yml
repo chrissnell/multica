@@ -18,7 +18,8 @@ permissions:
 jobs:
   release:
     runs-on: multica-arc-runners
-    timeout-minutes: 30
+    # Headroom for a buildkitd-restart retry on the longest builds.
+    timeout-minutes: 45
     env:
       HARBOR_HOST: registry.chrissnell.com
       BUILDKIT_ADDR: tcp://buildkitd.multica-ci.svc:1234
@@ -30,13 +31,13 @@ jobs:
     steps:
       - name: Mint a GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
 
       - name: Check out main at HEAD
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: main
           token: ${{ steps.app-token.outputs.token }}
@@ -123,20 +124,43 @@ jobs:
           for img in "${IMAGES[@]}"; do
             (
               set -euo pipefail
-              if [ "$img" = "runtime" ]; then
-                REGISTRY="${HARBOR_HOST}/multica" \
-                TAG="${{ steps.bump.outputs.tag }}" \
-                packaging/scripts/build-images.sh runtime
-              else
-                dockerfile="${DOCKERFILE[$img]}"
-                $BUILDCTL build \
-                  --frontend dockerfile.v0 \
-                  --local context=. \
-                  --local dockerfile="$(dirname "$dockerfile")" \
-                  --opt filename="$(basename "$dockerfile")" \
-                  --output "type=image,name=${HARBOR_HOST}/multica/multica-${img}:${{ steps.bump.outputs.tag }},push=true" \
-                  --metadata-file "/tmp/digests/${img}.json"
-              fi
+              # A buildkitd rollout or eviction mid-build surfaces on the
+              # client as a gRPC GOAWAY ("graceful_stop") or "code =
+              # Unavailable" / EOF — an infra hiccup, not a build defect. The
+              # longest builds (web, runtime) are the ones still in flight
+              # when the daemon bounces, so they fail while the fast images
+              # have already pushed. Retry only those transient transport
+              # drops; a genuine build error carries no such marker and exits
+              # on the first attempt.
+              attempt=1
+              max=3
+              while :; do
+                alog="$(mktemp)"
+                rc=0
+                if [ "$img" = "runtime" ]; then
+                  REGISTRY="${HARBOR_HOST}/multica" \
+                  TAG="${{ steps.bump.outputs.tag }}" \
+                  packaging/scripts/build-images.sh runtime > "$alog" 2>&1 || rc=$?
+                else
+                  dockerfile="${DOCKERFILE[$img]}"
+                  $BUILDCTL build \
+                    --frontend dockerfile.v0 \
+                    --local context=. \
+                    --local dockerfile="$(dirname "$dockerfile")" \
+                    --opt filename="$(basename "$dockerfile")" \
+                    --output "type=image,name=${HARBOR_HOST}/multica/multica-${img}:${{ steps.bump.outputs.tag }},push=true" \
+                    --metadata-file "/tmp/digests/${img}.json" > "$alog" 2>&1 || rc=$?
+                fi
+                cat "$alog"
+                [ "$rc" -eq 0 ] && exit 0
+                if [ "$attempt" -ge "$max" ] || \
+                   ! grep -qE 'graceful_stop|code = Unavailable|reading from server: EOF|failed to receive status' "$alog"; then
+                  exit "$rc"
+                fi
+                echo "::warning::buildkitd transport dropped during ${img} build (attempt ${attempt}/${max}); retrying after backoff"
+                sleep "$(( attempt * 15 ))"
+                attempt="$(( attempt + 1 ))"
+              done
             ) > "/tmp/build-logs/${img}.log" 2>&1 &
             PID[$img]=$!
           done
