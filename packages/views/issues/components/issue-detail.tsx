@@ -2095,11 +2095,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             </div>
           </div>
         </div>
+        </div>
+        {/* Sibling of the scroll pane (not inside it): pinned to the
+            non-scrolling wrapper so `absolute bottom-6` tracks the viewport
+            instead of scrolling away with the timeline content. */}
         <ScrollToBottomButton
           scrollEl={scrollContainerEl}
           label={t(($) => $.detail.scroll_to_bottom)}
         />
-        </div>
         </div>
       </div>
   );
