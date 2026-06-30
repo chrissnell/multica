@@ -6,7 +6,7 @@ image:
   registry: registry.chrissnell.com/multica
   pullSecret: registry-credentials
   pullPolicy: IfNotPresent
-  tag: v0.4.0-mk16
+  tag: v0.4.0-mk17
   tags:
     # PG 17 + pgvector v0.7.4 have been unchanged from mk3 through the current
     # top-level — pure rebuilds — so pin postgres at mk3 to avoid bouncing the
@@ -21,7 +21,7 @@ image:
     backend: sha256:a73babed3b69fc914fdc0a8eeb5435d5d016dd5da2469555bec1badd9d25f5c2
     web: sha256:9f0113f200e14c3ca378c587445b5f51072fe8bdd2f45c7b883e0e0173558fee
     controller: sha256:559f590dfa7852258631c7f5e663b46739b4ffbab1c8a5b7685065f1bceeef7a
-    claudeBroker: sha256:9f0230c4bcefd176c761a756d377637183212030758ff227b9bb81ac3834e8a3
+    claudeBroker: sha256:47c93bda522756689e3e405c9c96263fa051f84e0f2e0bd9e1b3ac7f9a2aadf3
     repocache: sha256:9dee463e601c8ece1def934ad3f577ddde6aff6b61a683f1279ce16af712ea92
 # Public exposure is handled OUT of this chart: a standalone
 # cloudflare-tunnel Ingress (multica-cf-ingress.yaml) puts multica behind the
