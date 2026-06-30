@@ -60,6 +60,30 @@ var (
 			Help: "1 if this pod currently holds the refresh lease, else 0.",
 		},
 	)
+	reelectTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "multica_claude_broker_reelect_total",
+			Help: "Times the leader-election loop re-entered after the elector returned (transient failure recovery; non-zero means at least one kube-API or lease-renewal blip).",
+		},
+	)
+	permanentFailureStreak = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "multica_claude_broker_permanent_failure_streak",
+			Help: "Consecutive permanent OAuth refresh failures (resets to 0 on any non-permanent outcome). Non-zero means the refresh_token is almost certainly revoked and an operator must reseed the Secret.",
+		},
+	)
+	lastPermanentFailureAt = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "multica_claude_broker_last_permanent_failure_at_seconds",
+			Help: "Unix timestamp of the most recent permanent OAuth refresh failure, or 0 if never.",
+		},
+	)
+	reseedDetectedTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "multica_claude_broker_reseed_detected_total",
+			Help: "Times the broker detected an operator reseed of the source Secret (refresh_token changed under us) and forced a refresh.",
+		},
+	)
 	constantsInfo = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "multica_claude_broker_constants_info",

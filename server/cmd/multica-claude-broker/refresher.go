@@ -43,15 +43,43 @@ type Refresher struct {
 	// holder owns load+refresh+store for one rotation; concurrent callers
 	// TryLock, fail, and serve the current cached token rather than queueing.
 	refreshMu sync.Mutex
+
+	// lastSeenMu protects lastSeenRefreshToken. The value is the refresh_token
+	// the broker most recently observed in (or wrote to) the source Secret.
+	// When the value loaded from the Secret differs from this — and we didn't
+	// just write it ourselves via a successful refresh — an operator has
+	// reseeded the Secret (e.g. after recovering from a revoked-token
+	// permanent failure). In that case we MUST bypass the "still fresh"
+	// optimization and exchange the new refresh_token immediately, so we
+	// (a) prove it works and (b) bring the access_token into sync with the
+	// new lineage. Detected reseeds bump reseedDetectedTotal so an operator
+	// can confirm the broker noticed.
+	lastSeenMu           sync.Mutex
+	lastSeenRefreshToken string
 }
 
 func NewRefresher(store *SecretStore, leader LeaderGate, oauth *OAuthClient, refreshPad time.Duration) *Refresher {
 	return &Refresher{store: store, leader: leader, oauth: oauth, refreshPad: refreshPad}
 }
 
+// observeAndCheckReseed records the refresh_token we just loaded and reports
+// whether it differs from the last token we observed/wrote. An initial
+// observation (lastSeenRefreshToken == "") is not a reseed; only a change
+// between two non-empty observations is. The seen-token is always updated to
+// the latest observation, so a single reseed fires once and subsequent loads
+// look normal.
+func (r *Refresher) observeAndCheckReseed(loaded string) bool {
+	r.lastSeenMu.Lock()
+	defer r.lastSeenMu.Unlock()
+	reseed := r.lastSeenRefreshToken != "" && loaded != "" && loaded != r.lastSeenRefreshToken
+	r.lastSeenRefreshToken = loaded
+	return reseed
+}
+
 // RefreshIfNeeded loads the current state and, if we're the leader and the
-// access_token is within RefreshPad of expiry, calls Anthropic and persists
-// the rotated state. Returns (refreshed, current_state, err).
+// access_token is within RefreshPad of expiry (OR the operator reseeded the
+// Secret with a fresh refresh_token), calls Anthropic and persists the rotated
+// state. Returns (refreshed, current_state, err).
 //
 // Errors:
 //   - ErrNotLeader: serve cached if non-expired; the next leader will refresh.
@@ -63,8 +91,17 @@ func (r *Refresher) RefreshIfNeeded(ctx context.Context) (bool, *TokenState, err
 		return false, nil, fmt.Errorf("load: %w", err)
 	}
 
-	// Still fresh enough — leadership doesn't matter for this branch.
-	if !state.ExpiresAt.IsZero() && time.Until(state.ExpiresAt) > r.refreshPad {
+	reseeded := r.observeAndCheckReseed(state.RefreshToken)
+	if reseeded {
+		reseedDetectedTotal.Inc()
+	}
+
+	// Still fresh enough AND we didn't just spot a reseed — leadership doesn't
+	// matter for this branch. A reseed must force a refresh even when the
+	// cached access_token is still within pad, otherwise the broker would sit
+	// on a perfectly valid new refresh_token without validating it until the
+	// access_token next expires — defeating the point of reseeding immediately.
+	if !reseeded && !state.ExpiresAt.IsZero() && time.Until(state.ExpiresAt) > r.refreshPad {
 		return false, state, nil
 	}
 
@@ -91,12 +128,20 @@ func (r *Refresher) RefreshIfNeeded(ctx context.Context) (bool, *TokenState, err
 
 	// Double-check under the lock: a sibling may have refreshed and stored a
 	// fresh token just before we acquired it. Adopt that instead of spending
-	// another rotation that would invalidate it.
+	// another rotation that would invalidate it. We feed observeAndCheckReseed
+	// the new value too so our internal tracker doesn't decide the sibling's
+	// rotation looks like an operator reseed on the next tick.
 	state, err = r.store.Load(rctx)
 	if err != nil {
 		return false, nil, fmt.Errorf("reload under refresh lock: %w", err)
 	}
-	if !state.ExpiresAt.IsZero() && time.Until(state.ExpiresAt) > r.refreshPad {
+	r.observeAndCheckReseed(state.RefreshToken)
+	// Honor the outer reseed signal: if the rotation was triggered by an
+	// operator reseed (not by access_token freshness), the inner freshness
+	// short-circuit must NOT fire. Otherwise the broker reads the new
+	// refresh_token, sees the access_token still fresh, and returns without
+	// exchanging — defeating the whole point of detecting the reseed.
+	if !reseeded && !state.ExpiresAt.IsZero() && time.Until(state.ExpiresAt) > r.refreshPad {
 		return false, state, nil
 	}
 
@@ -119,5 +164,8 @@ func (r *Refresher) RefreshIfNeeded(ctx context.Context) (bool, *TokenState, err
 	if err := r.store.Store(rctx, newState); err != nil {
 		return false, state, fmt.Errorf("persist new state: %w", err)
 	}
+	// Record what we just wrote, so the next Load doesn't read our own rotation
+	// as a reseed.
+	r.observeAndCheckReseed(newState.RefreshToken)
 	return true, newState, nil
 }
