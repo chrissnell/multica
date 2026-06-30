@@ -72,11 +72,20 @@ spec:
             initialDelaySeconds: 1
             periodSeconds: 5
             timeoutSeconds: 2
+          # /healthz now returns 503 when the cached access_token is expired
+          # beyond the broker's livenessStaleGrace (10m by default). At
+          # periodSeconds=10 and failureThreshold=3, kubelet restarts the pod
+          # after roughly 30s of sustained 503s — so the total time from
+          # "broker stopped refreshing" to "kubelet restarts it" is
+          # grace (10m) + ~30s. That's the post-2026-06-29 fix: pre-change,
+          # /healthz unconditionally returned 200 and a wedged broker could
+          # silently fail for hours.
           livenessProbe:
             httpGet: { path: /healthz, port: admin }
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 2
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.runtime.claudeBroker.resources | nindent 12 }}
 {{- end }}

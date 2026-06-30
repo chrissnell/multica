@@ -108,8 +108,10 @@ func run(logger *slog.Logger, cfg *Config) error {
 		return fmt.Errorf("initial reload: %w (has the bootstrap procedure been run?)", err)
 	}
 	//   2. Start leader election in a goroutine. The elector calls
-	//      OnStartedLeading once we win the lease.
-	go leader.Run(ctx)
+	//      OnStartedLeading once we win the lease. leader.Run loops on the
+	//      elector — a transient kube-API failure that returns it doesn't
+	//      permanently downgrade us, we re-enter election after a short pause.
+	go leader.Run(ctx, logger)
 	//   3. Start the refresh ticker. RefreshIfNeeded gates on IsLeader(), so
 	//      every tick before election settles is a silent no-op. Once we
 	//      become leader, the next tick refreshes if the cached token is

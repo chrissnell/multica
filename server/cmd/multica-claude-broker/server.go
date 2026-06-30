@@ -27,10 +27,25 @@ type Broker struct {
 	usage   *UsageSnapshot
 
 	ready atomic.Bool
+
+	// livenessStaleGrace is how far past ExpiresAt the cached token may drift
+	// before /healthz starts failing and asks kubelet to restart us. Failing
+	// liveness on stale tokens is the post-2026-06-29 fix: previously the
+	// broker silently held a long-expired token while /healthz returned 200,
+	// so kubelet had no way to know we were no longer doing our job.
+	livenessStaleGrace time.Duration
 }
 
 func NewBroker(refresher *Refresher, store *SecretStore, logger *slog.Logger) *Broker {
-	return &Broker{refresher: refresher, store: store, logger: logger}
+	return &Broker{
+		refresher: refresher,
+		store:     store,
+		logger:    logger,
+		// 10 min: longer than several refresh ticks (30s default), short enough
+		// that an operator paging on liveness flaps gets a useful signal within
+		// one alert window. Tighter risks flapping on a single failed tick.
+		livenessStaleGrace: 10 * time.Minute,
+	}
 }
 
 // Reload loads state from the Secret into the cache without touching the
@@ -80,6 +95,11 @@ func (b *Broker) tickRefresh(ctx context.Context) {
 	switch {
 	case err == nil && refreshed:
 		refreshTotal.WithLabelValues(outcomeOk).Inc()
+		// Any successful rotation clears the "stuck on permanent failure" signal.
+		// The streak gauge is what an operator paging on a revoked refresh_token
+		// alerts on; if it doesn't fall back to 0 on the very next success, the
+		// alert won't auto-resolve when they reseed the Secret.
+		permanentFailureStreak.Set(0)
 		b.setCached(state)
 		if err := b.store.MirrorAccessToken(ctx, state.AccessToken); err != nil {
 			b.logger.Warn("mirror access_token after refresh failed", "error", err)
@@ -116,10 +136,20 @@ func (b *Broker) tickRefresh(ctx context.Context) {
 		switch {
 		case errors.As(err, &perm):
 			refreshFailures.WithLabelValues("permanent").Inc()
+			// Track consecutive permanents only — every other outcome (success,
+			// skipped, transient, not_leader) resets the streak. A non-zero
+			// streak gauge is the smoking gun for a revoked refresh_token: the
+			// only fix is for an operator to reseed the source Secret with a
+			// fresh token from a `claude /login`.
+			permanentFailureStreak.Inc()
+			lastPermanentFailureAt.Set(float64(time.Now().Unix()))
 			b.logger.Error("access_token refresh failed",
 				"result", "failed", "trigger", "scheduled", "kind", "permanent", "error", err)
 		case errors.As(err, &transient):
 			refreshFailures.WithLabelValues("transient").Inc()
+			// Intentionally do NOT reset permanentFailureStreak — a transient
+			// outage on top of a revoked refresh_token must not hide the
+			// permanent signal. Only a successful rotation clears the streak.
 			b.logger.Warn("access_token refresh failed",
 				"result", "failed", "trigger", "scheduled", "kind", "transient", "error", err)
 		default:
@@ -179,7 +209,29 @@ func NewOpsMux(broker *Broker) *http.ServeMux {
 	return mux
 }
 
+// healthHandler is the liveness probe. It fails 503 only on signals that a
+// restart could plausibly fix:
+//   - We were once ready but the cached token has been expired longer than
+//     livenessStaleGrace, meaning the refresh loop has clearly stalled and a
+//     fresh process (fresh leader bid, fresh kube client, fresh in-mem state)
+//     is the cheapest recovery.
+//
+// We deliberately do NOT fail on "never been ready" — that's startup; the
+// startupProbe / readiness probe handle it. Liveness failing during startup
+// would crash-loop a brand-new pod that was about to come up.
 func (b *Broker) healthHandler(w http.ResponseWriter, r *http.Request) {
+	state := b.cachedSnapshot()
+	if state != nil && !state.ExpiresAt.IsZero() {
+		if expiredFor := time.Since(state.ExpiresAt); expiredFor > b.livenessStaleGrace {
+			b.logger.Error("liveness failing: cached token expired beyond grace",
+				"expired_at", state.ExpiresAt,
+				"expired_for", expiredFor.Truncate(time.Second).String(),
+				"grace", b.livenessStaleGrace.String(),
+				"leader", b.refresher.leader.IsLeader())
+			http.Error(w, "cached token expired beyond grace; restart requested", http.StatusServiceUnavailable)
+			return
+		}
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }
@@ -294,11 +346,17 @@ func (b *Broker) refreshHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "persist: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Manual /refresh bypasses RefreshIfNeeded, which is where the reseed
+	// tracker normally updates. Without this, a subsequent scheduled tick
+	// would Load the new refresh_token, see it differ from the stale tracker
+	// value, and counter-productively force *another* rotation.
+	b.refresher.observeAndCheckReseed(newState.RefreshToken)
 	b.setCached(newState)
 	if err := b.store.MirrorAccessToken(r.Context(), newState.AccessToken); err != nil {
 		b.logger.Warn("mirror access_token after manual refresh failed", "error", err)
 	}
 	refreshTotal.WithLabelValues(outcomeOk).Inc()
+	permanentFailureStreak.Set(0)
 	b.logger.Info("access_token refreshed",
 		"result", "success",
 		"trigger", "manual",
