@@ -2,7 +2,8 @@
 #
 # Shared base for all Multica agent runtime images: the `multica` binary plus
 # full polyglot toolchains (Go, Rust + cargo-ndk, Node/pnpm, JDK/Kotlin,
-# Android SDK + NDK, Python) and the debuggers/linters agents need at
+# Android SDK + NDK, Python, protobuf/protoc + Go & Rust codegen plugins)
+# and the debuggers/linters agents need at
 # runtime. Per-provider images (Dockerfile.claude, etc.) extend this and
 # add their agent CLI.
 #
@@ -49,6 +50,7 @@ ARG HELM_VERSION
 ARG GH_VERSION
 ARG WRANGLER_VERSION
 ARG RCLONE_VERSION
+ARG PROTOC_VERSION
 # Android SDK/NDK component versions don't need a per-file pin (they rarely
 # bump). Defaults stay in-Dockerfile and can be overridden via --build-arg.
 ARG ANDROID_CMDLINE_TOOLS_VERSION=13114758
@@ -65,7 +67,8 @@ RUN test -n "$RUST_VERSION"             || { echo "RUST_VERSION build arg is req
     && test -n "$HELM_VERSION"          || { echo "HELM_VERSION build arg is required" >&2; exit 1; } \
     && test -n "$GH_VERSION"            || { echo "GH_VERSION build arg is required" >&2; exit 1; } \
     && test -n "$WRANGLER_VERSION"      || { echo "WRANGLER_VERSION build arg is required" >&2; exit 1; } \
-    && test -n "$RCLONE_VERSION"        || { echo "RCLONE_VERSION build arg is required" >&2; exit 1; }
+    && test -n "$RCLONE_VERSION"        || { echo "RCLONE_VERSION build arg is required" >&2; exit 1; } \
+    && test -n "$PROTOC_VERSION"        || { echo "PROTOC_VERSION build arg is required" >&2; exit 1; }
 
 # Base apt packages: VCS, SSH, build/debug tooling, common dev utilities,
 # JDK 21 for Kotlin/Android Gradle Plugin 8.x. (Trixie doesn't ship a JDK 17
@@ -119,6 +122,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 
+# ── Protobuf compiler (protoc) ────────────────────────────────────────
+# Upstream release binary + the bundled well-known-type .proto files
+# (google/protobuf/*.proto). Extracting the include/ tree to /usr/local
+# means protoc auto-discovers the well-known types via its default
+# "<binary>/../include" search path — no -I flag needed. Both the Go
+# plugins (below) and Rust's prost/tonic build.rs invoke this protoc.
+RUN curl -fsSL -o /tmp/protoc.zip \
+       "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" \
+    && unzip -q /tmp/protoc.zip bin/protoc 'include/*' -d /usr/local \
+    && rm /tmp/protoc.zip \
+    && chmod a+rx /usr/local/bin/protoc \
+    && chmod -R a+rX /usr/local/include/google \
+    && protoc --version
+
 # ── Go toolchain + Go-based linters/debugger ──────────────────────────
 COPY --from=multica-build /usr/local/go /usr/local/go
 ENV GOROOT=/usr/local/go \
@@ -130,6 +147,8 @@ RUN mkdir -p "$GOPATH" "$GOBIN" \
     && go install golang.org/x/tools/gopls@latest \
     && go install honnef.co/go/tools/cmd/staticcheck@latest \
     && go install mvdan.cc/gofumpt@latest \
+    && go install google.golang.org/protobuf/cmd/protoc-gen-go@latest \
+    && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest \
     && curl -fsSL "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64.tar.gz" \
        | tar -xz -C /tmp \
     && mv "/tmp/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64/golangci-lint" /usr/local/bin/ \
@@ -137,7 +156,7 @@ RUN mkdir -p "$GOPATH" "$GOBIN" \
     && chmod -R a+rX "$GOPATH" "$GOBIN" \
     && rm -rf /root/.cache/go-build
 
-# ── Rust toolchain + linters/LSP + cargo-ndk for Android cross-compile ─
+# ── Rust toolchain + linters/LSP + cargo-ndk + prost/tonic protoc plugins ─
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:${PATH}
@@ -150,6 +169,7 @@ RUN curl -fsSL https://sh.rustup.rs \
          x86_64-linux-android \
          i686-linux-android \
     && cargo install --locked --version "${CARGO_NDK_VERSION}" cargo-ndk \
+    && cargo install --locked protoc-gen-prost protoc-gen-prost-crate protoc-gen-tonic \
     && chmod -R a+rwX "$RUSTUP_HOME" "$CARGO_HOME" \
     && rm -rf /tmp/cargo-install*
 
@@ -266,6 +286,12 @@ RUN multica version || true \
     && cargo --version \
     && cargo ndk --version \
     && rust-analyzer --version \
+    && protoc --version \
+    && protoc-gen-go --version \
+    && protoc-gen-go-grpc --version \
+    && command -v protoc-gen-prost \
+    && command -v protoc-gen-prost-crate \
+    && command -v protoc-gen-tonic \
     && javac -version \
     && kotlinc -version 2>&1 \
     && ktlint --version \
