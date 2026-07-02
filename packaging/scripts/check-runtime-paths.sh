@@ -22,6 +22,7 @@ WATCHED=(
   "packaging/golangci-lint-version"
   "packaging/rclone-version"
   "packaging/wrangler-version"
+  "packaging/protoc-version"
   "packaging/docker/runtime"
   "packaging/scripts/build-images.sh"
 )

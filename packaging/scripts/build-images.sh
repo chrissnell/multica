@@ -88,7 +88,7 @@ build_runtime() {
   # Toolchain pins for the runtime base. Each lives in its own text file
   # so future watcher workflows can bump them via PR (same pattern as
   # claude-code-version).
-  local rust_version kotlin_version golangci_lint_version ktlint_version pnpm_version kubectl_version helm_version gh_version wrangler_version rclone_version
+  local rust_version kotlin_version golangci_lint_version ktlint_version pnpm_version kubectl_version helm_version gh_version wrangler_version rclone_version protoc_version
   rust_version="$(read_pin rust-version)"
   kotlin_version="$(read_pin kotlin-version)"
   golangci_lint_version="$(read_pin golangci-lint-version)"
@@ -99,12 +99,13 @@ build_runtime() {
   gh_version="$(read_pin gh-version)"
   wrangler_version="$(read_pin wrangler-version)"
   rclone_version="$(read_pin rclone-version)"
+  protoc_version="$(read_pin protoc-version)"
 
   echo "==> Building $base (version=$version commit=$commit)"
   echo "    rust=$rust_version kotlin=$kotlin_version pnpm=$pnpm_version"
   echo "    golangci-lint=$golangci_lint_version ktlint=$ktlint_version"
   echo "    kubectl=$kubectl_version helm=$helm_version gh=$gh_version"
-  echo "    wrangler=$wrangler_version rclone=$rclone_version"
+  echo "    wrangler=$wrangler_version rclone=$rclone_version protoc=$protoc_version"
 
   if [[ -n "${BUILDKIT_ADDR:-}" ]]; then
     # CI path: in-cluster buildkitd, no local docker daemon. push=true is
@@ -132,6 +133,7 @@ build_runtime() {
       --opt build-arg:GH_VERSION="$gh_version" \
       --opt build-arg:WRANGLER_VERSION="$wrangler_version" \
       --opt build-arg:RCLONE_VERSION="$rclone_version" \
+      --opt build-arg:PROTOC_VERSION="$protoc_version" \
       --output "type=image,name=$base,push=true"
     echo "==> Building $claude (FROM $base, claude-code=$claude_code_version)"
     buildctl --addr "$BUILDKIT_ADDR" build \
@@ -159,6 +161,7 @@ build_runtime() {
     --build-arg GH_VERSION="$gh_version" \
     --build-arg WRANGLER_VERSION="$wrangler_version" \
     --build-arg RCLONE_VERSION="$rclone_version" \
+    --build-arg PROTOC_VERSION="$protoc_version" \
     -f packaging/docker/runtime/Dockerfile.base \
     -t "$base" .
   if [[ "$push" -eq 1 ]]; then
