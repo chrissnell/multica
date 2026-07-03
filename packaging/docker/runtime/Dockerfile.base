@@ -122,6 +122,43 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 
+# ── Ham-radio digital-mode vector-generator build deps ────────────────
+# Two independent toolchains for building the reference codecs that emit
+# our CI known-answer test vectors (codewords/tones/wav), both file-based:
+#
+#   WSJT-X reference sims (FST4/FST4W + the WSJT-X track: fst4sim,
+#   ldpcsim240_101/074, …) — Fortran tools linking single-precision FFTW.
+#   gcc/g++/make/cmake are already in build-essential above; gfortran and
+#   libfftw3-dev (ships libfftw3f) are the only additions they need.
+#
+#   fldigi (PSK family + the fldigi track) — an autotools + FLTK app built
+#   and driven headlessly to a WAV. libsndfile/libsamplerate are its offline
+#   WAV I/O + resampling (auto-detected by configure); the X/font/png/jpeg
+#   libs are FLTK's transitive deps. portaudio is intentionally omitted —
+#   no real audio device is ever touched. Trixie ships FLTK 1.4, so this
+#   uses libfltk1.4-dev (fldigi builds against 1.3 or 1.4).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      gfortran \
+      libfftw3-dev \
+      autoconf \
+      automake \
+      libtool \
+      libfltk1.4-dev \
+      libsndfile1-dev \
+      libsamplerate0-dev \
+      libx11-dev \
+      libxext-dev \
+      libxft-dev \
+      libxfixes-dev \
+      libxinerama-dev \
+      libfontconfig1-dev \
+      libpng-dev \
+      libjpeg-dev \
+      zlib1g-dev \
+      libusb-1.0-0-dev \
+      libhamlib-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # ── Protobuf compiler (protoc) ────────────────────────────────────────
 # Upstream release binary + the bundled well-known-type .proto files
 # (google/protobuf/*.proto). Extracting the include/ tree to /usr/local
@@ -303,4 +340,11 @@ RUN multica version || true \
     && helm version --short \
     && gh --version \
     && wrangler --version \
-    && rclone version | head -1
+    && rclone version | head -1 \
+    && gfortran --version | head -1 \
+    && autoconf --version | head -1 \
+    && fltk-config --version \
+    && pkg-config --exists fftw3f \
+    && pkg-config --exists sndfile \
+    && pkg-config --exists samplerate \
+    && pkg-config --exists hamlib
