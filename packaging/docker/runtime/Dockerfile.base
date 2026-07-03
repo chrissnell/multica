@@ -164,6 +164,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libasound2-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# ── OpenSCAD (programmatic 3D CAD) ─────────────────────────────────────
+# The scriptable solid modeller agents use to turn .scad source into
+# meshes. Geometry export (-o out.stl / .off / .3mf / .csg) runs through
+# CGAL and needs no display. Image export (-o out.png) needs an OpenGL
+# context, so xvfb is included: `xvfb-run -a openscad -o out.png in.scad`
+# gives headless preview renders with no real display attached.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      openscad \
+      xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
 # ── Protobuf compiler (protoc) ────────────────────────────────────────
 # Upstream release binary + the bundled well-known-type .proto files
 # (google/protobuf/*.proto). Extracting the include/ tree to /usr/local
@@ -346,6 +357,7 @@ RUN multica version || true \
     && gh --version \
     && wrangler --version \
     && rclone version | head -1 \
+    && openscad --version 2>&1 | head -1 \
     && gfortran --version | head -1 \
     && autoconf --version | head -1 \
     && fltk-config --version \
