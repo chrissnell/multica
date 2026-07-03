@@ -137,6 +137,10 @@ ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 #   libs are FLTK's transitive deps. portaudio is intentionally omitted —
 #   no real audio device is ever touched. Trixie ships FLTK 1.4, so this
 #   uses libfltk1.4-dev (fldigi builds against 1.3 or 1.4).
+#
+# libasound2-dev supplies the ALSA headers that cpal links against, which
+# the omnimodemd daemon crate needs to compile (no audio device is opened
+# at build time; this is a link-time dependency only).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       gfortran \
       libfftw3-dev \
@@ -157,6 +161,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       zlib1g-dev \
       libusb-1.0-0-dev \
       libhamlib-dev \
+      libasound2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Protobuf compiler (protoc) ────────────────────────────────────────
