@@ -126,12 +126,13 @@ jobs:
               set -euo pipefail
               # A buildkitd rollout or eviction mid-build surfaces on the
               # client as a gRPC GOAWAY ("graceful_stop") or "code =
-              # Unavailable" / EOF — an infra hiccup, not a build defect. The
-              # longest builds (web, runtime) are the ones still in flight
-              # when the daemon bounces, so they fail while the fast images
-              # have already pushed. Retry only those transient transport
-              # drops; a genuine build error carries no such marker and exits
-              # on the first attempt.
+              # Unavailable" / EOF, or as a solve context cancellation
+              # ("Canceled: context canceled") when the stream drops — an
+              # infra hiccup, not a build defect. The longest builds (web,
+              # runtime) are the ones still in flight when the daemon bounces,
+              # so they fail while the fast images have already pushed. Retry
+              # only those transient transport drops; a genuine build error
+              # carries no such marker and exits on the first attempt.
               attempt=1
               max=3
               while :; do
@@ -154,7 +155,7 @@ jobs:
                 cat "$alog"
                 [ "$rc" -eq 0 ] && exit 0
                 if [ "$attempt" -ge "$max" ] || \
-                   ! grep -qE 'graceful_stop|code = Unavailable|reading from server: EOF|failed to receive status' "$alog"; then
+                   ! grep -qE 'graceful_stop|code = Unavailable|reading from server: EOF|failed to receive status|context canceled' "$alog"; then
                   exit "$rc"
                 fi
                 echo "::warning::buildkitd transport dropped during ${img} build (attempt ${attempt}/${max}); retrying after backoff"
