@@ -1,0 +1,7 @@
+{
+  "page": {
+    "breadcrumb": "活跃 issue",
+    "empty_title": "没有正在运行的智能体",
+    "empty_description": "有智能体正在处理的 issue 会显示在这里。"
+  }
+}
