@@ -1,0 +1,7 @@
+{
+  "page": {
+    "breadcrumb": "Active Issues",
+    "empty_title": "No agents are running",
+    "empty_description": "Issues with an agent actively working on them will appear here."
+  }
+}

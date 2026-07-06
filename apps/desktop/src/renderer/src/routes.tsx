@@ -19,6 +19,7 @@ import { ProjectsPage } from "@multica/views/projects/components";
 import { DashboardPage } from "@multica/views/dashboard";
 import { AutopilotsPage } from "@multica/views/autopilots/components";
 import { MyIssuesPage } from "@multica/views/my-issues";
+import { ActiveIssuesPage } from "@multica/views/active-issues";
 import { SkillsPage } from "@multica/views/skills";
 import { DesktopRuntimesPage } from "./components/desktop-runtimes-page";
 import { AgentsPage } from "@multica/views/agents";
@@ -154,6 +155,11 @@ export const appRoutes: RouteObject[] = [
             path: "my-issues",
             element: <MyIssuesPage />,
             handle: { title: "My Issues" },
+          },
+          {
+            path: "active-issues",
+            element: <ActiveIssuesPage />,
+            handle: { title: "Active Issues" },
           },
           {
             path: "runtimes",
