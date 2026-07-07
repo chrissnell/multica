@@ -164,6 +164,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libasound2-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# ── General C++ scientific/GUI build deps ─────────────────────────────
+# Qt 5 core/GUI headers (qtbase5-dev) and the Boost C++ headers
+# (libboost-dev) for agents building C++ projects that link against them.
+# g++, gfortran and libfftw3-dev are already provided above
+# (build-essential and the ham-radio block respectively).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      qtbase5-dev \
+      libboost-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # ── OpenSCAD (programmatic 3D CAD) ─────────────────────────────────────
 # The scriptable solid modeller agents use to turn .scad source into
 # meshes. Geometry export (-o out.stl / .off / .3mf / .csg) runs through
