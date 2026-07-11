@@ -25,6 +25,11 @@ func TestGitconfigForTask_GitHubHTTPS(t *testing.T) {
 		"pushInsteadOf = https://github.com/chrissnell/graywolf",
 		"pushInsteadOf = https://github.com/chrissnell/graywolf.git",
 		"pushInsteadOf = git@github.com:chrissnell/graywolf",
+		// The .git-suffixed SSH variant must be present, otherwise a
+		// push URL that already ends in .git gets rewritten to the
+		// malformed owner/repo.git.git and GitHub returns
+		// "Repository not found".
+		"pushInsteadOf = git@github.com:chrissnell/graywolf.git",
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(got, want) {
@@ -48,6 +53,31 @@ func TestGitconfigForTask_PushDoesNotRouteToCache(t *testing.T) {
 	// not the file:// cache.
 	if !strings.Contains(got, `[url "git@github.com:org/repo.git"]`) {
 		t.Errorf("missing SSH push target block:\n%s", got)
+	}
+}
+
+func TestGitconfigForTask_PushInsteadOfHasAllFourVariants(t *testing.T) {
+	got := gitconfigForTask(
+		"ws",
+		"/repos",
+		[]daemon.RepoData{{URL: "https://github.com/org/repo.git"}},
+	)
+	// The push block must mirror the fetch block's four URL forms. A missing
+	// git@…/.git variant is what produced the doubled ".git.git" push URL and
+	// the "Repository not found" failures agents kept burning tokens on.
+	for _, want := range []string{
+		"pushInsteadOf = https://github.com/org/repo",
+		"pushInsteadOf = https://github.com/org/repo.git",
+		"pushInsteadOf = git@github.com:org/repo",
+		"pushInsteadOf = git@github.com:org/repo.git",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing push variant %q\ngot:\n%s", want, got)
+		}
+	}
+	// No rewrite target may ever carry a doubled .git suffix.
+	if strings.Contains(got, "repo.git.git") {
+		t.Errorf("doubled .git suffix present:\n%s", got)
 	}
 }
 
