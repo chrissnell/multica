@@ -58,6 +58,16 @@ func gitconfigForTask(workspaceID, mountPath string, repos []daemon.RepoData) st
 		fmt.Fprintf(&b, "\tpushInsteadOf = https://%s/%s\n", host, ownerRepo)
 		fmt.Fprintf(&b, "\tpushInsteadOf = https://%s/%s.git\n", host, ownerRepo)
 		fmt.Fprintf(&b, "\tpushInsteadOf = git@%s:%s\n", host, ownerRepo)
+		fmt.Fprintf(&b, "\tpushInsteadOf = git@%s:%s.git\n", host, ownerRepo)
+		// The four pushInsteadOf entries must mirror the four insteadOf
+		// entries above. Omitting the git@…/.git variant is a trap: when a
+		// remote's push URL already carries the .git suffix, the longest
+		// matching prefix falls back to the bare git@…owner/repo entry, git
+		// re-appends the leftover ".git", and the push target becomes the
+		// malformed owner/repo.git.git — which GitHub rejects as
+		// "Repository not found". The exact-match entry rewrites the URL to
+		// itself, so a .git-suffixed SSH URL passes through unchanged.
+		//
 		// We don't push-rewrite the cache file:// URL itself because git
 		// applies pushInsteadOf to the ORIGINAL (pre-insteadOf) remote URL.
 		// The agent's clone records the original URL, so push lookups
