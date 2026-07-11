@@ -52,7 +52,7 @@ If logic appears in both apps, it MUST be extracted to a shared package. There a
 - Columns: `snake_case` (`workspace_id`, `created_at`, `last_seen_at`)
 - Foreign keys: `<table>_id`
 - Booleans: `is_<state>` or `<state>_at` (timestamp form preferred for state changes)
-- Migration files: `NNN_descriptive_name.up.sql` + `.down.sql` — always provide both directions
+- Migration files: `NNN_descriptive_name.up.sql` + `.down.sql` — always provide both directions. Numbers are zero-padded to three digits (applied in lexicographic filename order). **Fork-local migrations live in a reserved `9000+` band** so they never collide with upstream's climbing sequence — see `server/migrations/README.md`.
 
 ### Go
 
