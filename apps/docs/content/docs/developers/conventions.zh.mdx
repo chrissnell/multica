@@ -52,7 +52,7 @@ monorepo 的包边界是硬约束：
 - 字段：`snake_case`（`workspace_id`、`created_at`、`last_seen_at`）
 - 外键：`<table>_id`
 - 布尔：`is_<state>` 或者 `<state>_at`（状态变化优先用时间戳形式）
-- 迁移文件：`NNN_descriptive_name.up.sql` + `.down.sql`，**永远写双向**
+- 迁移文件：`NNN_descriptive_name.up.sql` + `.down.sql`，**永远写双向**。编号补零到三位（按文件名字典序应用）。**Fork 本地迁移使用保留的 `9000+` 号段**，以避免与上游不断增长的编号冲突——详见 `server/migrations/README.md`。
 
 ### Go
 
