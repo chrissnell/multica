@@ -24,8 +24,20 @@ upstream owns.
 - New fork migration → pick the next free number at `9000+`
   (`9002_…`, `9003_…`).
 - Upstream migrations keep their original low numbers; we take them verbatim on
-  merge. A `9000+` file always sorts after every 3-digit upstream file, so it
-  runs last and can safely depend on any upstream table.
+  merge. A `9000+` file sorts after every upstream file whose number stays below
+  `900` — i.e. all of upstream's current and any foreseeable range (upstream is
+  ~160 and climbs one at a time) — so the fork band runs last and can safely
+  depend on any upstream table.
+
+  **Bound (be honest about the edge):** ordering is a byte-wise string sort, not
+  numeric, so the "runs last" guarantee is not literally unbounded. If upstream
+  ever reaches the 3-digit `900`–`999` range, those files sort *after* `9001…`
+  (compare `9001_` vs `900_`: at the 4th byte `'1'` < `'_'`). Widening the band
+  to `90000+` does **not** fix this — `90000_` still sorts before `900_` for the
+  same reason. The only unbounded fix is a non-digit prefix (e.g. `fork_0001_…`),
+  since any letter sorts after any digit. We deliberately keep the simpler `9000+`
+  scheme because upstream reaching migration `900` is hundreds of migrations away;
+  revisit (switch to a letter prefix) if that horizon ever gets close.
 
 The band is anchored by `9000_reserve_fork_migration_band`, which also performs
 a one-time fixup: the fork's first local migration originally shipped as
