@@ -188,7 +188,7 @@ func (c *Client) setIdentityHeaders(req *http.Request) {
 		protocol.DaemonCapabilitySkillBundlesV1,
 		protocol.DaemonCapabilityCoalescedCommentsV1,
 	}, ","))
-	cli.SetCFAccessHeaders(req)
+	cli.SetCFAccessHeaders(req.Header)
 }
 
 // SetToken sets the auth token for authenticated requests.
