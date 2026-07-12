@@ -28,7 +28,8 @@ func TestPersistSelfHostConfigIfReachable(t *testing.T) {
 		}
 
 		proceed, err := persistSelfHostConfigIfReachable(
-			"https://api.new.example", "https://new.example", "",
+			cli.CLIConfig{ServerURL: "https://api.new.example", AppURL: "https://new.example"},
+			"",
 			func(string) bool { return false },
 		)
 		if err != nil {
@@ -54,7 +55,8 @@ func TestPersistSelfHostConfigIfReachable(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 
 		proceed, err := persistSelfHostConfigIfReachable(
-			"https://api.new.example", "https://new.example", "",
+			cli.CLIConfig{ServerURL: "https://api.new.example", AppURL: "https://new.example"},
+			"",
 			func(string) bool { return true },
 		)
 		if err != nil {

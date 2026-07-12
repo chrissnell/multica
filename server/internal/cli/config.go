@@ -17,6 +17,20 @@ type CLIConfig struct {
 	WorkspaceID string `json:"workspace_id,omitempty"`
 	Token       string `json:"token,omitempty"`
 
+	// CFAccessClientID / CFAccessClientSecret are a Cloudflare Access
+	// service-token pair, used when the Multica server sits behind
+	// Cloudflare Zero Trust (Access) and every non-browser request must
+	// carry these two headers to reach the origin. They are persisted here
+	// so the daemon — which runs under launchd/systemd and does not inherit
+	// the operator's interactive shell env — can present the token on its
+	// own outbound calls. LoadCLIConfigForProfile promotes them into the
+	// http-client package defaults so every APIClient (CLI subcommands +
+	// daemon) sends them transparently. CF_ACCESS_CLIENT_ID /
+	// CF_ACCESS_CLIENT_SECRET env vars still take precedence when both are
+	// set, matching the convention used by `cloudflared access curl`.
+	CFAccessClientID     string `json:"cf_access_client_id,omitempty"`
+	CFAccessClientSecret string `json:"cf_access_client_secret,omitempty"`
+
 	// Backends contains per-backend overrides for users who want to point
 	// the daemon at non-default tool installations (e.g. an OpenClaw bundled
 	// inside another desktop app, or multiple isolated profiles on the same
@@ -135,6 +149,11 @@ func LoadCLIConfigForProfile(profile string) (CLIConfig, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return CLIConfig{}, fmt.Errorf("parse CLI config: %w", err)
 	}
+	// Promote any persisted CF Access service-token pair into the http-client
+	// package defaults so every APIClient (CLI + daemon) sends them without
+	// each caller having to plumb the values through explicitly. Env vars
+	// still win over these defaults; see cfAccessHeaders.
+	SetCFAccessDefaults(cfg.CFAccessClientID, cfg.CFAccessClientSecret)
 	return cfg, nil
 }
 

@@ -78,6 +78,8 @@ func init() {
 	setupSelfHostCmd.Flags().Int("port", 8080, "Backend server port (used when --server-url is not set)")
 	setupSelfHostCmd.Flags().Int("frontend-port", 3000, "Frontend port (used when --app-url is not set)")
 	setupSelfHostCmd.Flags().String(callbackHostFlag, "", callbackHostFlagHelp)
+	setupSelfHostCmd.Flags().String("cf-access-client-id", "", "Cloudflare Access service-token client ID, when the server sits behind Cloudflare Zero Trust (env: CF_ACCESS_CLIENT_ID)")
+	setupSelfHostCmd.Flags().String("cf-access-client-secret", "", "Cloudflare Access service-token client secret (env: CF_ACCESS_CLIENT_SECRET)")
 
 	setupCmd.AddCommand(setupCloudCmd)
 	setupCmd.AddCommand(setupSelfHostCmd)
@@ -196,6 +198,17 @@ func runSetupSelfHost(cmd *cobra.Command, args []string) error {
 	appURL := resolveSelfHostAppURL(cmd, existing)
 	frontendPort, _ := cmd.Flags().GetInt("frontend-port")
 
+	// Resolve Cloudflare Access service-token credentials for setups where
+	// the server sits behind Cloudflare Zero Trust. Values from --flags or
+	// env win, but we fall back to whatever the existing config already has
+	// so re-running setup doesn't drop a previously-configured token.
+	// Pushed into the http client immediately so both the reachability
+	// probe (below) and the browser login flow's follow-up API calls can
+	// clear the CF Access edge without a working browser cookie.
+	cfAccessID := cli.FlagOrEnv(cmd, "cf-access-client-id", "CF_ACCESS_CLIENT_ID", existing.CFAccessClientID)
+	cfAccessSecret := cli.FlagOrEnv(cmd, "cf-access-client-secret", "CF_ACCESS_CLIENT_SECRET", existing.CFAccessClientSecret)
+	cli.SetCFAccessDefaults(cfAccessID, cfAccessSecret)
+
 	if appURL == "" {
 		if userProvidedServerURL && !serverHostIsLocal(serverURL) {
 			// We can't guess the frontend URL for a remote server: api.x.co
@@ -226,7 +239,13 @@ func runSetupSelfHost(cmd *cobra.Command, args []string) error {
 	// working config or wipe the saved token: persistSelfHostConfigIfReachable
 	// writes only when the server answers, so an unreachable host leaves the
 	// existing config untouched and the user stays logged in.
-	reachable, err := persistSelfHostConfigIfReachable(serverURL, appURL, profile, probeServer)
+	newCfg := cli.CLIConfig{
+		ServerURL:            serverURL,
+		AppURL:               appURL,
+		CFAccessClientID:     cfAccessID,
+		CFAccessClientSecret: cfAccessSecret,
+	}
+	reachable, err := persistSelfHostConfigIfReachable(newCfg, profile, probeServer)
 	if err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
@@ -257,20 +276,16 @@ func runSetupSelfHost(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// persistSelfHostConfigIfReachable probes serverURL and, only when it answers,
-// overwrites the profile config with the given self-host URLs. When the server
-// is unreachable it leaves any existing config — and its auth token — untouched
+// persistSelfHostConfigIfReachable probes cfg.ServerURL and, only when it
+// answers, overwrites the profile config with cfg. When the server is
+// unreachable it leaves any existing config — and its auth token — untouched
 // and returns false, so a failed `setup self-host` never logs the user out or
 // clobbers a working config (the original ordering saved first, then probed,
-// then bailed — wiping the token on every failed probe). The prober is injected
-// so tests can exercise both branches without real network I/O.
-func persistSelfHostConfigIfReachable(serverURL, appURL, profile string, probe func(string) bool) (bool, error) {
-	if !probe(serverURL) {
+// then bailed — wiping the token on every failed probe). The prober is
+// injected so tests can exercise both branches without real network I/O.
+func persistSelfHostConfigIfReachable(cfg cli.CLIConfig, profile string, probe func(string) bool) (bool, error) {
+	if !probe(cfg.ServerURL) {
 		return false, nil
-	}
-	cfg := cli.CLIConfig{
-		ServerURL: serverURL,
-		AppURL:    appURL,
 	}
 	if err := cli.SaveCLIConfigForProfile(cfg, profile); err != nil {
 		return false, err
@@ -364,20 +379,15 @@ func promptAppURL(serverURL string) (string, error) {
 }
 
 // probeServer checks whether a Multica backend is reachable at the given URL.
+// Uses cli.NewAPIClient so the request picks up the same headers every other
+// CLI/daemon call sends — most importantly the Cloudflare Access service-token
+// pair, without which a CF-Zero-Trust-protected origin would 302 the probe to
+// the CF Access login and the reachability check would always fail even when
+// the Multica server itself is happy.
 func probeServer(baseURL string) bool {
-	url := strings.TrimRight(baseURL, "/") + "/health"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return false
-	}
-
-	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	client := cli.NewAPIClient(baseURL, "", "")
+	client.HTTPClient = &http.Client{Timeout: 2 * time.Second}
+	return client.GetJSON(ctx, "/health", nil) == nil
 }
