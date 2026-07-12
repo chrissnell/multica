@@ -95,6 +95,15 @@ runtime:
     enabled: true
     image:
       name: multica-claude-broker
+    # Refresh window: broker rotates when < refreshPad remains until
+    # expires_at. 15m gives the Mac-side multica-token-sync a wide
+    # margin to propagate rotated tokens into the local Keychain BEFORE
+    # the Claude Code CLI's own refresh threshold triggers a competing
+    # local refresh — the concurrent-refresh race that would otherwise
+    # burn the shared refresh_token and land the broker on invalid_grant.
+    # Combined with token-sync's bidirectional freshness reconciler this
+    # keeps the two OAuth clients from stepping on each other.
+    refreshPad: 15m
   # In-cluster repo cache (Plan F.1). Maintains bare clones of every
   # workspace repo on an RWX PVC. Worker Job pods mount the PVC RO and clone
   # via file:// URLs rewritten through a per-task gitconfig CM. Sub-second
