@@ -1,0 +1,135 @@
+name: upstream-tracking
+
+# Biweekly: fetch upstream (multica-ai/multica) main, open a
+# `merge/upstream-<date>` PR that merges it into our fork, and let this PR's
+# CI (.github/workflows/ci.yml — frontend + backend + installer + packaging
+# helm-render) prove the merge is green. Merging stays a human action.
+#
+# When the merge is clean the PR is opened ready for review. When it conflicts
+# the branch is pushed with the conflict markers committed and the PR is opened
+# as a DRAFT flagged for manual resolution — check it out and follow
+# docs/upstream-tracking.md.
+#
+# We track upstream `main`, not release tags — see docs/upstream-tracking.md
+# for the freshness-vs-stability rationale. To retarget, change UPSTREAM_REF.
+#
+# Companion script: scripts/upstream-merge.sh (also runnable locally).
+
+on:
+  schedule:
+    - cron: "0 8 1,15 * *"   # 08:00 UTC on the 1st and 15th (biweekly)
+  workflow_dispatch:          # also runnable on-demand
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_REF: main
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0    # full history so the merge and push work
+
+      - name: Merge upstream onto a dated branch
+        id: merge
+        env:
+          UPSTREAM_REF: ${{ env.UPSTREAM_REF }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          scripts/upstream-merge.sh
+
+      - name: Report up to date
+        if: steps.merge.outputs.status == 'up_to_date'
+        run: echo "::notice::Fork already up to date with upstream/${UPSTREAM_REF}; nothing to do."
+
+      - name: Skip if a PR for this branch is already open
+        if: steps.merge.outputs.status == 'clean' || steps.merge.outputs.status == 'conflicts'
+        id: dedupe
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.merge.outputs.branch }}
+        run: |
+          EXISTING="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' || true)"
+          if [[ -n "$EXISTING" ]]; then
+            echo "::notice::PR for $BRANCH already open: #$EXISTING"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ensure labels exist
+        if: (steps.merge.outputs.status == 'clean' || steps.merge.outputs.status == 'conflicts') && steps.dedupe.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create upstream-merge --color 1d76db --description "Scheduled upstream (multica-ai/multica) merge" 2>/dev/null || true
+          gh label create needs-manual-merge --color d93f0b --description "Upstream merge has conflicts to resolve by hand" 2>/dev/null || true
+
+      - name: Open PR (clean merge)
+        if: steps.merge.outputs.status == 'clean' && steps.dedupe.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.merge.outputs.branch }}
+          BEHIND: ${{ steps.merge.outputs.behind }}
+        run: |
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "chore(upstream): merge upstream/${UPSTREAM_REF} (${BRANCH#merge/upstream-})" \
+            --head  "$BRANCH" \
+            --base  main \
+            --label "upstream-merge" \
+            --body  "$(cat <<EOF
+          Automated by \`.github/workflows/upstream-tracking.yml\`.
+
+          Merges **${BEHIND}** new commit(s) from \`upstream/${UPSTREAM_REF}\` (multica-ai/multica). The merge applied **cleanly** — no conflicts.
+
+          ### Before merging
+          - Confirm CI on this PR is green (frontend + backend + installer + packaging helm-render).
+          - Skim the diff for upstream changes that touch fork-owned surfaces (K8S runtime, daemon/controller, the fork UI features). See the retention checklist in \`docs/upstream-tracking.md\`.
+          - Merging is a human action — review, then click Merge.
+
+          Playbook: \`docs/upstream-tracking.md\`.
+          EOF
+          )"
+
+      - name: Open draft PR (conflicts)
+        if: steps.merge.outputs.status == 'conflicts' && steps.dedupe.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.merge.outputs.branch }}
+          BEHIND: ${{ steps.merge.outputs.behind }}
+          CONFLICT_COUNT: ${{ steps.merge.outputs.conflict_count }}
+          CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
+        run: |
+          git push origin "$BRANCH"
+          FILE_LIST="$(printf '%s\n' "$CONFLICT_FILES" | sed 's/^/- `/; s/$/`/')"
+          gh pr create \
+            --draft \
+            --title "chore(upstream): merge upstream/${UPSTREAM_REF} (${BRANCH#merge/upstream-}) — ${CONFLICT_COUNT} CONFLICTS" \
+            --head  "$BRANCH" \
+            --base  main \
+            --label "upstream-merge" \
+            --label "needs-manual-merge" \
+            --body  "$(cat <<EOF
+          Automated by \`.github/workflows/upstream-tracking.yml\`.
+
+          Merging **${BEHIND}** new commit(s) from \`upstream/${UPSTREAM_REF}\` (multica-ai/multica) hit **${CONFLICT_COUNT} conflicted file(s)**. This is a **draft** and the head commit still contains conflict markers — **do not merge as-is**.
+
+          ### Conflicted files
+          ${FILE_LIST}
+
+          ### How to resolve
+          1. \`git fetch origin && git checkout ${BRANCH}\`
+          2. Resolve each file per the staged approach and UI-retention rule in \`docs/upstream-tracking.md\`.
+          3. \`git add -A && git commit --amend --no-edit\` (or a fresh commit), then \`git push --force-with-lease\`.
+          4. Mark this PR ready for review once CI is green.
+
+          Playbook: \`docs/upstream-tracking.md\`.
+          EOF
+          )"
