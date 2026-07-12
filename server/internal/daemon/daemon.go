@@ -3700,6 +3700,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		"TMP":                  taskTempDir,
 		"TEMP":                 taskTempDir,
 	}
+	// Propagate Cloudflare Access service-token credentials to the agent
+	// when the daemon has them (from env or persisted CLI config). The
+	// agent is a subprocess with no access to ~/.multica/config.json (it
+	// may run under a different HOME, in a sandbox, or with the config
+	// file explicitly excluded), so every `multica` subcommand or direct
+	// backend call the agent makes must have the pair in env or CF Access
+	// will 302 it to the login page and the agent will see HTML instead of
+	// JSON. Injected only when both halves are set; a partial pair would
+	// just be dropped downstream anyway.
+	if id, secret := cli.CFAccessCredentials(); id != "" && secret != "" {
+		agentEnv["CF_ACCESS_CLIENT_ID"] = id
+		agentEnv["CF_ACCESS_CLIENT_SECRET"] = secret
+	}
 	if task.AutopilotRunID != "" {
 		agentEnv["MULTICA_AUTOPILOT_RUN_ID"] = task.AutopilotRunID
 	}
