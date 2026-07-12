@@ -1,9 +1,17 @@
 name: upstream-tracking
 
-# Biweekly: fetch upstream (multica-ai/multica) main, open a
-# `merge/upstream-<date>` PR that merges it into our fork, and let this PR's
-# CI (.github/workflows/ci.yml — frontend + backend + installer + packaging
-# helm-render) prove the merge is green. Merging stays a human action.
+# Biweekly: fetch upstream (multica-ai/multica) main and open a
+# `merge/upstream-<date>` PR that merges it into our fork. The gate is this
+# PR's CI (.github/workflows/ci.yml — frontend + backend + installer +
+# packaging helm-render); merging stays a human action.
+#
+# CI auto-run caveat: GitHub does not trigger `pull_request`/`push` workflows
+# for refs created with the default GITHUB_TOKEN (recursion prevention). To make
+# ci.yml run automatically on these PRs, add an `UPSTREAM_PAT` repo secret (a
+# fine-grained PAT with contents + pull-requests write) — this workflow uses it
+# when present and falls back to GITHUB_TOKEN otherwise. Without a PAT the PR
+# opens with no checks; a reviewer must push an empty commit or close/reopen it
+# to kick CI. See docs/upstream-tracking.md.
 #
 # When the merge is clean the PR is opened ready for review. When it conflicts
 # the branch is pushed with the conflict markers committed and the PR is opened
@@ -12,6 +20,7 @@ name: upstream-tracking
 #
 # We track upstream `main`, not release tags — see docs/upstream-tracking.md
 # for the freshness-vs-stability rationale. To retarget, change UPSTREAM_REF.
+# The PR base is assumed to be the default branch `main`.
 #
 # Companion script: scripts/upstream-merge.sh (also runnable locally).
 
@@ -34,6 +43,10 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0    # full history so the merge and push work
+          # Persist a PAT when available so the branch push is attributed to a
+          # real actor and ci.yml auto-runs on the PR; else fall back to the
+          # default token (push works, but CI won't auto-trigger — see header).
+          token: ${{ secrets.UPSTREAM_PAT || github.token }}
 
       - name: Merge upstream onto a dated branch
         id: merge
@@ -52,7 +65,7 @@ jobs:
         if: steps.merge.outputs.status == 'clean' || steps.merge.outputs.status == 'conflicts'
         id: dedupe
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_PAT || secrets.GITHUB_TOKEN }}
           BRANCH: ${{ steps.merge.outputs.branch }}
         run: |
           EXISTING="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' || true)"
@@ -66,7 +79,7 @@ jobs:
       - name: Ensure labels exist
         if: (steps.merge.outputs.status == 'clean' || steps.merge.outputs.status == 'conflicts') && steps.dedupe.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_PAT || secrets.GITHUB_TOKEN }}
         run: |
           gh label create upstream-merge --color 1d76db --description "Scheduled upstream (multica-ai/multica) merge" 2>/dev/null || true
           gh label create needs-manual-merge --color d93f0b --description "Upstream merge has conflicts to resolve by hand" 2>/dev/null || true
@@ -74,11 +87,13 @@ jobs:
       - name: Open PR (clean merge)
         if: steps.merge.outputs.status == 'clean' && steps.dedupe.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_PAT || secrets.GITHUB_TOKEN }}
           BRANCH: ${{ steps.merge.outputs.branch }}
           BEHIND: ${{ steps.merge.outputs.behind }}
         run: |
-          git push origin "$BRANCH"
+          # force-with-lease: this workflow owns the dated branch; overwrite our
+          # own prior push if a same-day rerun happens after the PR was closed.
+          git push --force-with-lease origin "$BRANCH"
           gh pr create \
             --title "chore(upstream): merge upstream/${UPSTREAM_REF} (${BRANCH#merge/upstream-})" \
             --head  "$BRANCH" \
@@ -90,9 +105,9 @@ jobs:
           Merges **${BEHIND}** new commit(s) from \`upstream/${UPSTREAM_REF}\` (multica-ai/multica). The merge applied **cleanly** — no conflicts.
 
           ### Before merging
-          - Confirm CI on this PR is green (frontend + backend + installer + packaging helm-render).
+          - Confirm CI on this PR is green (frontend + backend + installer + packaging helm-render). If the PR shows **no checks**, no \`UPSTREAM_PAT\` secret is configured — push an empty commit (\`git commit --allow-empty\`) or close/reopen the PR to trigger CI. See \`docs/upstream-tracking.md\`.
           - Skim the diff for upstream changes that touch fork-owned surfaces (K8S runtime, daemon/controller, the fork UI features). See the retention checklist in \`docs/upstream-tracking.md\`.
-          - Merging is a human action — review, then click Merge.
+          - Merging is a human action — review, then click Merge (a real merge commit, **not** squash — see the never-squash rule in the playbook).
 
           Playbook: \`docs/upstream-tracking.md\`.
           EOF
@@ -101,13 +116,13 @@ jobs:
       - name: Open draft PR (conflicts)
         if: steps.merge.outputs.status == 'conflicts' && steps.dedupe.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_PAT || secrets.GITHUB_TOKEN }}
           BRANCH: ${{ steps.merge.outputs.branch }}
           BEHIND: ${{ steps.merge.outputs.behind }}
           CONFLICT_COUNT: ${{ steps.merge.outputs.conflict_count }}
           CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
         run: |
-          git push origin "$BRANCH"
+          git push --force-with-lease origin "$BRANCH"
           FILE_LIST="$(printf '%s\n' "$CONFLICT_FILES" | sed 's/^/- `/; s/$/`/')"
           gh pr create \
             --draft \
@@ -119,7 +134,7 @@ jobs:
             --body  "$(cat <<EOF
           Automated by \`.github/workflows/upstream-tracking.yml\`.
 
-          Merging **${BEHIND}** new commit(s) from \`upstream/${UPSTREAM_REF}\` (multica-ai/multica) hit **${CONFLICT_COUNT} conflicted file(s)**. This is a **draft** and the head commit still contains conflict markers — **do not merge as-is**.
+          Merging **${BEHIND}** new commit(s) from \`upstream/${UPSTREAM_REF}\` (multica-ai/multica) hit **${CONFLICT_COUNT} conflicted file(s)**. This is a **draft** and the head commit still contains conflict markers — **do not merge as-is**. CI failing (or absent) on this branch is expected until the markers are resolved.
 
           ### Conflicted files
           ${FILE_LIST}

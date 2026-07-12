@@ -77,6 +77,8 @@ echo "==> base is $BEHIND commit(s) behind upstream/$UPSTREAM_REF" >&2
 
 if [[ "$CHECK_ONLY" -eq 1 ]]; then
   emit status behind
+  emit branch ""
+  emit conflict_count 0
   exit 0
 fi
 

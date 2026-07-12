@@ -43,6 +43,12 @@ To change this (e.g. pin to tags during an upstream-instability window), set
 
 ## The recurring workflow
 
+> **Do the one-time base graft first.** Until the squashed catch-up base is
+> repaired (see *One-time repair* below), every run computes ~660 commits behind
+> and opens a giant conflict draft. Land the graft on `main`, then the biweekly
+> cadence is meaningful and the first run should be `up_to_date` or a small clean
+> merge.
+
 `.github/workflows/upstream-tracking.yml` runs biweekly (08:00 UTC on the 1st
 and 15th) and on-demand via **Run workflow**. Each run:
 
@@ -57,6 +63,17 @@ and 15th) and on-demand via **Run workflow**. Each run:
    the conflicted files and pointing back here.
 
 Merging is always a human action — CI is the only automated gate.
+
+### CI auto-run on merge PRs (`UPSTREAM_PAT`)
+
+GitHub deliberately does **not** trigger `pull_request` / `push` workflows for
+refs created with the default `GITHUB_TOKEN` (recursion prevention). So a merge
+PR opened by the workflow under the default token shows **no checks**. To make
+`ci.yml` run automatically, add a repo secret **`UPSTREAM_PAT`** — a fine-grained
+PAT with `contents: write` + `pull-requests: write`; the workflow uses it for the
+branch push and PR creation when present and falls back to `GITHUB_TOKEN`
+otherwise. Without the PAT, kick CI manually on the PR: push an empty commit
+(`git commit --allow-empty -m "ci: trigger"`) or close and reopen it.
 
 The heavy lifting lives in `scripts/upstream-merge.sh`, which is runnable
 locally to drive or debug a merge without a workflow round-trip:
