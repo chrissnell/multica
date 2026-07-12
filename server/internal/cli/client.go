@@ -186,6 +186,20 @@ func SetCFAccessDefaults(id, secret string) {
 	cfAccessMu.Unlock()
 }
 
+// SetCFAccessHeaders attaches Cloudflare Access service-token headers to req
+// when a credential pair is available. Exported so packages that maintain
+// their own HTTP client (notably internal/daemon, whose long-poll client is
+// separate from APIClient) share the same edge-authentication behavior — the
+// alternative is a silent gap where the daemon can't clear CF Access even
+// though the CLI can, which is exactly the bug this exists to prevent.
+// Safe to call on any request; no-op when no credentials are configured.
+func SetCFAccessHeaders(req *http.Request) {
+	if id, secret := cfAccessHeaders(); id != "" {
+		req.Header.Set("CF-Access-Client-Id", id)
+		req.Header.Set("CF-Access-Client-Secret", secret)
+	}
+}
+
 // cfAccessHeaders returns the CF Access service-token credentials to send on
 // the next request, or ("", "") when none are configured. Env vars beat the
 // defaults set via SetCFAccessDefaults, and both halves must be non-empty for
@@ -218,10 +232,7 @@ func (c *APIClient) setHeaders(req *http.Request) {
 	if c.TaskID != "" {
 		req.Header.Set("X-Task-ID", c.TaskID)
 	}
-	if id, secret := cfAccessHeaders(); id != "" {
-		req.Header.Set("CF-Access-Client-Id", id)
-		req.Header.Set("CF-Access-Client-Secret", secret)
-	}
+	SetCFAccessHeaders(req)
 
 	platform := c.Platform
 	if platform == "" {
