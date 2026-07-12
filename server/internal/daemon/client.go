@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -165,7 +166,14 @@ func (c *Client) SetVersion(v string) {
 	c.version = v
 }
 
-// setIdentityHeaders attaches X-Client-Platform/Version/OS to req when set.
+// setIdentityHeaders attaches X-Client-Platform/Version/OS/Capabilities and,
+// when configured, the Cloudflare Access service-token pair to req. Every
+// outbound daemon HTTP path funnels its request through this helper, so any
+// new send site added later inherits both classes of headers automatically —
+// including the CF Access pair, without which a CF-Zero-Trust-fronted origin
+// would 302 every daemon call to an HTML login page and the daemon's JSON
+// decoder would fail on `<` in the response body (which is exactly the
+// symptom this fixed).
 func (c *Client) setIdentityHeaders(req *http.Request) {
 	if c.platform != "" {
 		req.Header.Set("X-Client-Platform", c.platform)
@@ -180,6 +188,7 @@ func (c *Client) setIdentityHeaders(req *http.Request) {
 		protocol.DaemonCapabilitySkillBundlesV1,
 		protocol.DaemonCapabilityCoalescedCommentsV1,
 	}, ","))
+	cli.SetCFAccessHeaders(req)
 }
 
 // SetToken sets the auth token for authenticated requests.
