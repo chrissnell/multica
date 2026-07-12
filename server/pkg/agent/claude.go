@@ -247,10 +247,6 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 
 		b.cfg.Logger.Info("claude finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		// resolveSessionID now folds in the worker-pod "No conversation found"
-		// clearing path via stderrTail (see claudeNoConversationFound), so the
-		// daemon's retry-with-fresh-session fallback still fires when a resume
-		// target is missing on a fresh Pod ~/.claude.
 		reportedSessionID := resolveSessionID(opts.ResumeSessionID, sessionID, finalStatus == "failed", stderrTail)
 		if reportedSessionID != sessionID {
 			b.cfg.Logger.Info("claude resume did not land; clearing fresh session id for daemon fallback",
@@ -755,9 +751,7 @@ func isFilteredChildEnvKey(key string) bool {
 		return true
 	}
 	// CLAUDECODE_* (no underscore between CLAUDE and CODE) is wholly internal;
-	// keep stripping it. The user-facing config namespace is CLAUDE_CODE_* and
-	// passes through untouched — including the broker's CLAUDE_CODE_OAUTH_TOKEN
-	// bearer and the other OAuth/API auth vars the worker Pod needs.
+	// keep stripping it. The user-facing config namespace is CLAUDE_CODE_*.
 	return strings.HasPrefix(key, "CLAUDECODE_")
 }
 
