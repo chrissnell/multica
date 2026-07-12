@@ -1,6 +1,7 @@
 {
   "nav": {
     "inbox": "인박스",
+    "chat": "채팅",
     "my_issues": "내 이슈",
     "issues": "이슈",
     "active_issues": "활성 이슈",
@@ -17,6 +18,7 @@
     "trigger": "도움말",
     "docs": "문서",
     "changelog": "변경 로그",
+    "discord": "Discord",
     "feedback": "피드백"
   },
   "workspace_loader": {
@@ -41,6 +43,11 @@
     "plan_usage_title": "플랜 한도",
     "plan_usage_session": "세션",
     "plan_usage_weekly": "주간",
-    "plan_usage_resets": "재설정"
+    "plan_usage_resets": "재설정",
+    "discord_card": {
+      "title": "Discord 참여하기",
+      "description": "팀과 다른 사용자들과 교류해 보세요.",
+      "dismiss": "닫기"
+    }
   }
 }

@@ -113,10 +113,9 @@ ORDER BY c.created_at ASC, c.id ASC;
 
 -- name: ListThreadCommentsForIssue :many
 -- Returns the root of the thread containing @anchor_id plus every descendant
--- (recursive — defends against any future deeper nesting; today's data is two
--- layers because the CreateComment path collapses replies to root, but the
--- schema does not enforce that). @anchor_id may itself be a root or a reply.
--- Output is chronological so it can be fed straight to the agent.
+-- (recursive — supports real reply-to-reply nesting). @anchor_id may itself be
+-- a root or any reply in the thread. Output is chronological so it can be fed
+-- straight to the agent.
 WITH RECURSIVE root_of AS (
     -- Walk up from the anchor until parent_id IS NULL.
     SELECT c.id, c.parent_id
@@ -313,6 +312,60 @@ WHERE issue_id = @issue_id
   AND id <> @anchor_id
   AND NOT (author_type = 'agent' AND author_id = @author_id);
 
+-- name: GetLatestMemberCommentForIssueSince :one
+-- MUL-4195 completion reconciliation: the newest MEMBER-authored comment on an
+-- issue created strictly after @since (a run's started_at). Used when a task
+-- completes to detect deliberate user input that landed while the agent was
+-- busy — or that was merged into the running task after its context was
+-- already built — so a single follow-up run can be scheduled for it. Restricted
+-- to author_type = 'member' on purpose: only human input earns the guaranteed
+-- follow-up, which preserves the existing anti-loop guarantees (agent replies,
+-- acknowledgements, and self-triggers never qualify). Returns pgx.ErrNoRows
+-- when nothing newer exists, i.e. the run already covered the latest input.
+SELECT * FROM comment
+WHERE issue_id = @issue_id
+  AND author_type = 'member'
+  AND created_at > @since
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: ListReconcilableCommentsForIssueSince :many
+-- MUL-4195 / MUL-4304 completion reconciliation: every MEMBER- or AGENT-authored
+-- comment on an issue created strictly after @since (the completing run's
+-- created_at anchor), plus every id in its planned trigger/coalesced batch.
+-- Planned ids matter for retry children because their input comments predate
+-- the child's created_at; if one could not be embedded at claim time it still
+-- needs reconciliation. The handler excludes only delivered_comment_ids, then
+-- replays the remainder through the normal trigger pipeline oldest first.
+--
+-- Author-type scope (MUL-4304): originally restricted to author_type = 'member'.
+-- That left a gap — an explicit agent→agent @mention (agent A comments
+-- `@agent B`) that landed while B already had a DISPATCHED task was dropped by
+-- the create-time enqueue path (merge only folds into a QUEUED task, so a
+-- dispatched target hits the merge-miss + active-task continue) and then never
+-- compensated here, because agent-authored comments were excluded. We now also
+-- return 'agent' comments so those explicit mentions can be replayed.
+--
+-- This does NOT reopen the anti-loop guarantees the member-only filter was
+-- protecting. The reconcile pass runs each returned comment through
+-- computeCommentAgentTriggers under its OWN author_type, and for an agent author
+-- it then keeps ONLY explicit @agent/@squad mention triggers
+-- (keepExplicitMentionTriggers) — the assigned-squad-leader fallback and all
+-- other conversational routing are dropped, so a plain agent reply /
+-- acknowledgement yields nothing regardless of issue assignment. The reconcile
+-- pass further keeps only triggers routing to the agent that just completed, so
+-- an agent comment can never fan out to an unrelated agent. Ordered ASC so
+-- replaying in order lets later comments coalesce onto the follow-up created by
+-- the first.
+SELECT * FROM comment
+WHERE issue_id = @issue_id
+  AND author_type IN ('member', 'agent')
+  AND (
+      created_at > @since
+      OR id = ANY(@planned_comment_ids::uuid[])
+  )
+ORDER BY created_at ASC, id ASC;
+
 -- name: GetComment :one
 SELECT * FROM comment
 WHERE id = $1;
@@ -324,12 +377,9 @@ WHERE id = $1 AND workspace_id = $2;
 -- name: GetThreadRoot :one
 -- Returns the thread-root comment for @comment_id by walking parent_id up to
 -- the row whose parent_id IS NULL. For a root comment it returns that comment
--- itself. Used at the write boundary to flatten replies: every new reply stores
--- the thread root as its parent_id, so the comment tree never exceeds depth 1.
--- This enforces the 2-level threading model the product and UI already assume
--- (a root + a flat list of replies, like Linear/Slack) at insert time, so every
--- reader can treat a reply's parent_id AS its thread root without re-walking the
--- tree. Cycle-safe under the PK constraint (a comment cannot be its own ancestor).
+-- itself. Used when callers need thread-level behavior while parent_id remains
+-- the exact direct parent of a reply. Cycle-safe under the PK constraint (a
+-- comment cannot be its own ancestor).
 WITH RECURSIVE root_of AS (
     SELECT c.id, c.parent_id
     FROM comment c
@@ -343,8 +393,8 @@ SELECT c.* FROM comment c
 WHERE c.id = (SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1);
 
 -- name: CreateComment :one
-INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id)
-VALUES ($1, $2, $3, $4, $5, $6, sqlc.narg(parent_id))
+INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id, source_task_id)
+VALUES ($1, $2, $3, $4, $5, $6, sqlc.narg(parent_id), sqlc.narg(source_task_id))
 RETURNING *;
 
 -- name: UpdateComment :one
@@ -383,6 +433,52 @@ UPDATE comment SET
     resolved_by_id = COALESCE(resolved_by_id, $3),
     updated_at = CASE WHEN resolved_at IS NULL THEN now() ELSE updated_at END
 WHERE id = $1
+RETURNING *;
+
+-- name: ClearOtherThreadResolutions :many
+-- Single-resolution invariant: a thread has at most one resolved comment.
+-- Resolving @target_id makes it the sole resolution, so this clears resolved_at
+-- on every OTHER currently-resolved comment in the same thread (the root of
+-- @target_id plus every descendant). The handler runs this in the SAME tx as
+-- ResolveComment so the replace is atomic — a crash can never leave two
+-- resolutions or zero. Scope is the thread only (id IN descendants AND
+-- id <> @target_id), never the whole issue. Returns each cleared row so the
+-- handler can emit a comment:unresolved event per row; granular realtime
+-- consumers replace a single comment in place and would otherwise keep
+-- displaying the stale resolution.
+WITH RECURSIVE root_of AS (
+    -- Walk up from the target to its thread root.
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = @target_id AND c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+thread_root AS (
+    SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1
+),
+descendants AS (
+    -- Expand back down from the root over the whole subtree. Cycle-safe under
+    -- the PK constraint (a comment cannot be its own ancestor).
+    SELECT c.id
+    FROM comment c
+    JOIN thread_root tr ON c.id = tr.id
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+)
+UPDATE comment SET
+    resolved_at = NULL,
+    resolved_by_type = NULL,
+    resolved_by_id = NULL,
+    updated_at = now()
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.id <> @target_id
+  AND comment.resolved_at IS NOT NULL
 RETURNING *;
 
 -- name: UnresolveComment :one

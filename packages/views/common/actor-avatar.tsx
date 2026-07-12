@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ActorAvatar as ActorAvatarBase } from "@multica/ui/components/common/actor-avatar";
+import { AVATAR_SIZE_PX, type AvatarSize } from "@multica/ui/lib/avatar-size";
 import {
   HoverCard,
   HoverCardTrigger,
@@ -34,7 +35,7 @@ export type AgentHoverCardVariant = "profile" | "live";
 interface ActorAvatarProps {
   actorType: string;
   actorId: string;
-  size?: number;
+  size?: AvatarSize;
   className?: string;
   /**
    * Wrap the avatar in a hover-card preview on dwell. Use for "who is this?"
@@ -193,13 +194,16 @@ function ActorAvatarProfileLink({
 // 14 px owner sub-avatar in agents-list rows) stay visually clean. The dot
 // scales with the avatar size — anything ≥24 px gets the standard 8 px dot,
 // smaller avatars use a 6 px dot so the indicator doesn't overwhelm them.
-function AgentStatusDot({ agentId, size }: { agentId: string; size?: number }) {
+// Exported for surfaces that render the base avatar directly (e.g. comment
+// trigger chips) but still want the standard presence dot.
+export function AgentStatusDot({ agentId, size }: { agentId: string; size?: AvatarSize }) {
   const ws = useCurrentWorkspace();
   const detail = useAgentPresenceDetail(ws?.id, agentId);
   if (detail === "loading") return null;
 
   const { dotClass, label } = availabilityConfig[detail.availability];
-  const dotSize = (size ?? 24) >= 24 ? "h-1.5 w-1.5" : "h-1 w-1";
+  const px = size ? AVATAR_SIZE_PX[size] : 24;
+  const dotSize = px >= 24 ? "h-1.5 w-1.5" : "h-1 w-1";
 
   return (
     <span

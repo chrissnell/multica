@@ -1,6 +1,7 @@
 {
   "nav": {
     "inbox": "Inbox",
+    "chat": "Chat",
     "my_issues": "My Issues",
     "issues": "Issues",
     "active_issues": "Active Issues",
@@ -17,6 +18,7 @@
     "trigger": "Help",
     "docs": "Docs",
     "changelog": "Change log",
+    "discord": "Discord",
     "feedback": "Feedback"
   },
   "workspace_loader": {
@@ -41,6 +43,11 @@
     "plan_usage_title": "Plan limits",
     "plan_usage_session": "Session",
     "plan_usage_weekly": "Weekly",
-    "plan_usage_resets": "Resets"
+    "plan_usage_resets": "Resets",
+    "discord_card": {
+      "title": "Join our Discord",
+      "description": "Chat with the team and other builders.",
+      "dismiss": "Dismiss"
+    }
   }
 }

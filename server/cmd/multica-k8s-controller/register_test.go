@@ -65,11 +65,13 @@ func TestRegisterAll_MapsBackRuntimeIDs(t *testing.T) {
 // must (a) examine the ack and (b) POST a `completed` result containing
 // the static catalog for the runtime's provider.
 //
-// We use a `gemini` runtime here rather than `claude` to make the test
+// We use a `copilot` runtime here rather than `claude` to keep the test
 // hermetic: claude discovery shells out to `claude --help` for thinking-
-// level probing, which on a dev host that has the CLI installed slows the
-// test down. Gemini has no shellout (`geminiStaticModels()` returns
-// directly). The controller code path is provider-agnostic.
+// level probing, which on a host that has the CLI installed slows the test
+// down (and hangs it). Copilot discovery fast-fails when the CLI is absent
+// and returns copilotStaticModels() directly, so the catalog resolves
+// without a shellout. The controller code path is provider-agnostic. (The
+// previous `gemini` runtime was dropped when upstream removed that backend.)
 func TestHeartbeatLoop_RespondsToPendingModelList(t *testing.T) {
 	var (
 		mu              sync.Mutex
@@ -109,7 +111,7 @@ func TestHeartbeatLoop_RespondsToPendingModelList(t *testing.T) {
 	cli.SetToken("tk")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	runtimes := []Registered{{RuntimeID: "rt-X", Provider: "gemini"}}
+	runtimes := []Registered{{RuntimeID: "rt-X", Provider: "copilot"}}
 
 	done := make(chan struct{})
 	go func() {

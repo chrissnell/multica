@@ -28,7 +28,7 @@ export function MemberDetailPage({ userId }: { userId: string }) {
   if (!member) {
     return (
       <div className="flex flex-1 min-h-0 flex-col">
-        <MemberBreadcrumb workspaceName={workspace?.name} title={t(($) => $.detail.breadcrumb_fallback)} />
+        <MemberBreadcrumb workspaceName={workspace?.name} workspaceAvatarUrl={workspace?.avatar_url} title={t(($) => $.detail.breadcrumb_fallback)} />
         <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-16 text-center">
           <UserRound className="h-8 w-8 text-muted-foreground" />
           <div>
@@ -51,14 +51,14 @@ export function MemberDetailPage({ userId }: { userId: string }) {
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
-      <MemberBreadcrumb workspaceName={workspace?.name} title={member.name} />
+      <MemberBreadcrumb workspaceName={workspace?.name} workspaceAvatarUrl={workspace?.avatar_url} title={member.name} />
 
       <div className="flex shrink-0 items-center gap-3 border-b px-6 py-4">
         <ActorAvatarBase
           name={member.name}
           initials={initials}
           avatarUrl={resolvePublicFileUrl(member.avatar_url)}
-          size={44}
+          size="xl"
           className="rounded-full"
         />
         <div className="min-w-0 flex-1">
@@ -79,15 +79,17 @@ export function MemberDetailPage({ userId }: { userId: string }) {
 
 function MemberBreadcrumb({
   workspaceName,
+  workspaceAvatarUrl,
   title,
 }: {
   workspaceName: string | undefined;
+  workspaceAvatarUrl?: string | null;
   title: string;
 }) {
   const { t } = useT("members");
   return (
     <PageHeader className="gap-1.5">
-      <WorkspaceAvatar name={workspaceName ?? "W"} size="sm" />
+      <WorkspaceAvatar name={workspaceName ?? "W"} avatarUrl={workspaceAvatarUrl} size="sm" />
       <span className="text-sm text-muted-foreground">
         {workspaceName ?? t(($) => $.detail.workspace_fallback)}
       </span>

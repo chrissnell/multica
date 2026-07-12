@@ -13,6 +13,7 @@ export interface TimelineItem {
   startTs?: number;
   /** Epoch ms when this action completed (last underlying message, or its tool_result). */
   endTs?: number;
+  created_at?: string;
 }
 
 function parseTs(value?: string): number | undefined {
@@ -50,6 +51,7 @@ export function coalesceTimelineItems(items: TimelineItem[]): TimelineItem[] {
         content: `${prev.content ?? ""}${item.content ?? ""}`,
         startTs: minTs(prev.startTs, item.startTs),
         endTs: maxTs(prev.endTs, item.endTs),
+        created_at: item.created_at ?? prev.created_at,
       };
       continue;
     }
@@ -108,6 +110,7 @@ export function buildTimeline(msgs: TaskMessagePayload[]): TimelineItem[] {
       output: msg.output,
       startTs: ts,
       endTs: ts,
+      created_at: msg.created_at,
     });
   }
   return redactTimelineItems(pairToolDurations(coalesceTimelineItems(items)));

@@ -1,6 +1,8 @@
 package repocache
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -134,6 +136,16 @@ func TestSlugFor_MatchesBareDirName(t *testing.T) {
 		if got := c.SlugFor("any-ws", u); got != want {
 			t.Errorf("SlugFor(%q) = %q, want %q", u, got, want)
 		}
+	}
+}
+
+func TestRunGitOutputTimesOut(t *testing.T) {
+	_, err := runGitOutputWithTimeout(0, "--version")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("runGitOutputWithTimeout error = %v, want deadline exceeded", err)
+	}
+	if !strings.Contains(err.Error(), "timed out after 0s") {
+		t.Fatalf("runGitOutputWithTimeout error = %v, want timeout context", err)
 	}
 }
 
