@@ -1,6 +1,7 @@
 {
   "nav": {
     "inbox": "收件箱",
+    "chat": "聊天",
     "my_issues": "我的 issue",
     "issues": "Issues",
     "active_issues": "活跃 issue",
@@ -17,6 +18,7 @@
     "trigger": "帮助",
     "docs": "文档",
     "changelog": "更新日志",
+    "discord": "Discord",
     "feedback": "反馈"
   },
   "workspace_loader": {
@@ -41,6 +43,11 @@
     "plan_usage_title": "套餐用量",
     "plan_usage_session": "会话",
     "plan_usage_weekly": "每周",
-    "plan_usage_resets": "重置"
+    "plan_usage_resets": "重置",
+    "discord_card": {
+      "title": "加入我们的 Discord",
+      "description": "和团队及其他用户一起交流。",
+      "dismiss": "关闭"
+    }
   }
 }

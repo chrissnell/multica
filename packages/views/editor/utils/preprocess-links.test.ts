@@ -94,52 +94,87 @@ describe("preprocessLinks — CJK punctuation boundary", () => {
   });
 });
 
-// The bug: linkify-it treats "*" as a valid URL path character, so a URL
-// wrapped in markdown bold/italic markers (**url**) swallows the trailing
-// asterisks into the href. The link then 404s and the emphasis markers are
-// consumed instead of rendering the text bold. The fix trims trailing
-// asterisks off the detected URL so the delimiters survive for the parser.
-describe("preprocessLinks — markdown emphasis delimiter boundary", () => {
-  it("does not swallow trailing ** from a bold-wrapped URL (original report)", () => {
-    const out = preprocessLinks("**https://github.com/chrissnell/omnimodem/pull/6**");
-    expect(out).toBe(
-      "**[https://github.com/chrissnell/omnimodem/pull/6](https://github.com/chrissnell/omnimodem/pull/6)**",
+// The bug (#4222): an agent mentions a project file like `plan.md` in a comment.
+// linkify-it fuzzy-matches it as the domain `plan.md` (md is Moldova's ccTLD) and
+// turns it into a clickable https://plan.md link that goes nowhere. Bare filename
+// tokens must stay plain text — only an explicit scheme makes them a link.
+describe("preprocessLinks — bare filenames are not auto-linked as URLs", () => {
+  it("leaves a bare .md filename in CJK prose as plain text", () => {
+    const out = preprocessLinks("决策已锁定，plan.md 已更新");
+    expect(out).toBe("决策已锁定，plan.md 已更新");
+  });
+
+  it("leaves README.md as plain text", () => {
+    expect(preprocessLinks("see README.md for details")).toBe("see README.md for details");
+  });
+
+  it("leaves other extensions that collide with TLDs (sh, rs, py) as plain text", () => {
+    expect(preprocessLinks("run build.sh then main.rs and app.py")).toBe(
+      "run build.sh then main.rs and app.py",
     );
   });
 
-  it("does not swallow a single trailing * from an italic-wrapped URL", () => {
-    const out = preprocessLinks("*https://example.com/foo*");
-    expect(out).toBe("*[https://example.com/foo](https://example.com/foo)*");
-  });
-
-  it("handles a bold URL inside surrounding prose", () => {
-    const out = preprocessLinks("See **https://example.com/a/b** for details");
-    expect(out).toBe(
-      "See **[https://example.com/a/b](https://example.com/a/b)** for details",
+  it("honors an explicit scheme on a filename-shaped host", () => {
+    expect(preprocessLinks("open https://plan.md now")).toBe(
+      "open [https://plan.md](https://plan.md) now",
     );
   });
 
-  it("trims trailing asterisks from a fuzzy (schemeless) bold URL", () => {
-    const out = preprocessLinks("**example.com/path**");
-    expect(out).toBe("**[example.com/path](http://example.com/path)**");
+  it("still linkifies real fuzzy domains whose TLD is not a file extension", () => {
+    expect(preprocessLinks("官网 NBA.com")).toBe("官网 [NBA.com](http://NBA.com)");
   });
 
-  it("preserves a plain URL with no trailing asterisks (no regression)", () => {
-    const out = preprocessLinks("go https://example.com/path");
-    expect(out).toBe("go [https://example.com/path](https://example.com/path)");
-  });
-
-  it("trims asterisks from multiple bold URLs on the same line", () => {
-    const out = preprocessLinks("**https://x.com/p** and **https://y.com/q**");
-    expect(out).toBe(
-      "**[https://x.com/p](https://x.com/p)** and **[https://y.com/q](https://y.com/q)**",
+  it("suppresses the bare filename but still linkifies a real domain after it", () => {
+    expect(preprocessLinks("plan.md，example.com")).toBe(
+      "plan.md，[example.com](http://example.com)",
     );
   });
 
-  it("strips asterisks but keeps CJK boundary handling intact", () => {
-    const out = preprocessLinks("**https://example.com/x**。后文");
-    expect(out).toBe(
-      "**[https://example.com/x](https://example.com/x)**。后文",
+  it("still detects explicit ./ file paths (FILE_PATH_REGEX regression)", () => {
+    expect(preprocessLinks("see ./src/main.go here")).toBe(
+      "see [./src/main.go](./src/main.go) here",
+    );
+  });
+});
+
+// Trailing markdown emphasis / strikethrough delimiters that linkify-it counts
+// as URL characters must be dropped from the URL, so the closing `**` of
+// `**url**` stays as emphasis instead of being swallowed into the href — that
+// swallow was the MUL-4242 render bug. Mirrors GFM's own autolink trailing trim.
+describe("preprocessLinks — trailing markdown delimiter is not part of the URL", () => {
+  it("keeps the closing ** outside a bold-wrapped bare URL", () => {
+    expect(preprocessLinks("**https://example.com/x**")).toBe(
+      "**[https://example.com/x](https://example.com/x)**",
+    );
+  });
+
+  it("handles the original bug shape (bold + fullwidth colon)", () => {
+    expect(preprocessLinks("**PR：https://example.com/x**")).toBe(
+      "**PR：[https://example.com/x](https://example.com/x)**",
+    );
+  });
+
+  it("keeps ** outside when a CJK punctuation immediately follows (variant B)", () => {
+    expect(preprocessLinks("**https://example.com/x**（MUL-4277）")).toBe(
+      "**[https://example.com/x](https://example.com/x)**（MUL-4277）",
+    );
+  });
+
+  it("keeps the closing * outside an italic-wrapped bare URL", () => {
+    expect(preprocessLinks("*https://example.com/x*")).toBe(
+      "*[https://example.com/x](https://example.com/x)*",
+    );
+  });
+
+  it("strips a trailing * that really ends a URL — documented tradeoff, matches GFM", () => {
+    expect(preprocessLinks("see https://example.com/glob/* here")).toBe(
+      "see [https://example.com/glob/](https://example.com/glob/)* here",
+    );
+  });
+
+  it("keeps a * in the middle of a URL", () => {
+    expect(preprocessLinks("https://example.com/a*b/c")).toBe(
+      "[https://example.com/a*b/c](https://example.com/a*b/c)",
     );
   });
 });

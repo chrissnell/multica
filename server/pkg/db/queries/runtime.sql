@@ -45,10 +45,48 @@ INSERT INTO agent_runtime (
     owner_id,
     last_seen_at
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
-ON CONFLICT (workspace_id, daemon_id, provider)
+-- Built-in runtimes carry no profile_id. The arbiter is the partial unique
+-- index from migration 121 (WHERE profile_id IS NULL); the predicate must be
+-- spelled out so Postgres selects that partial index, not the custom-runtime
+-- one on (workspace_id, daemon_id, profile_id).
+ON CONFLICT (workspace_id, daemon_id, provider) WHERE profile_id IS NULL
 DO UPDATE SET
     name = EXCLUDED.name,
     runtime_mode = EXCLUDED.runtime_mode,
+    status = EXCLUDED.status,
+    device_info = EXCLUDED.device_info,
+    metadata = EXCLUDED.metadata,
+    owner_id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id),
+    last_seen_at = now(),
+    updated_at = now()
+RETURNING *, (xmax = 0) AS inserted;
+
+-- name: UpsertAgentRuntimeWithProfile :one
+-- Custom-runtime registration: a daemon resolved a workspace runtime_profile's
+-- command_name on PATH and is registering an instance of it. The arbiter is the
+-- partial unique index from migration 120 (WHERE profile_id IS NOT NULL), so a
+-- single daemon can host the built-in provider AND any number of custom
+-- profiles of the same protocol family. provider stays the protocol family so
+-- task routing (agent.New(provider)) is unchanged; profile_id is the stable
+-- identity. (xmax = 0) AS inserted mirrors UpsertAgentRuntime.
+INSERT INTO agent_runtime (
+    workspace_id,
+    daemon_id,
+    name,
+    runtime_mode,
+    provider,
+    status,
+    device_info,
+    metadata,
+    owner_id,
+    profile_id,
+    last_seen_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+ON CONFLICT (workspace_id, daemon_id, profile_id) WHERE profile_id IS NOT NULL
+DO UPDATE SET
+    name = EXCLUDED.name,
+    runtime_mode = EXCLUDED.runtime_mode,
+    provider = EXCLUDED.provider,
     status = EXCLUDED.status,
     device_info = EXCLUDED.device_info,
     metadata = EXCLUDED.metadata,
@@ -66,6 +104,44 @@ UPDATE agent_runtime
 SET visibility = @visibility, updated_at = now()
 WHERE id = @id
 RETURNING *;
+
+-- name: UpdateAgentRuntimeCustomName :one
+-- Sets or clears a runtime's user-facing custom name (MUL-4217). custom_name
+-- overrides the daemon-proposed `name` for display; passing NULL reverts to
+-- the default. Kept separate from the registration upserts above (which do
+-- name = EXCLUDED.name on every heartbeat) so a custom name is never
+-- clobbered by the daemon. Gated at the handler to owner / workspace admin.
+UPDATE agent_runtime
+SET custom_name = @custom_name, updated_at = now()
+WHERE id = @id
+RETURNING *;
+
+-- name: UpdateAgentRuntimeCustomNameByDaemon :many
+-- Machine-level rename (MUL-4217): applies one custom name to every runtime
+-- sharing a daemon_id in the workspace, since a single machine hosts one
+-- runtime per provider. @owner_id is NULL for workspace owners/admins (rename
+-- the whole machine) or the actor's user id otherwise (only their own
+-- runtimes on that machine), so a member cannot relabel someone else's
+-- runtime that happens to share the host.
+UPDATE agent_runtime
+SET custom_name = @custom_name, updated_at = now()
+WHERE workspace_id = @workspace_id
+  AND daemon_id = @daemon_id
+  AND (@owner_id::uuid IS NULL OR owner_id = @owner_id)
+RETURNING *;
+
+-- name: ListDaemonCustomNames :many
+-- Lists the custom_name of every OTHER runtime on (workspace_id, daemon_id)
+-- (MUL-4217). @exclude_id drops the just-registered row. The caller derives
+-- the machine-level name in Go — the same "all runtimes share one non-null
+-- name" rule the frontend applies in sharedCustomName — so a freshly-added
+-- runtime on an already-named machine can inherit that name and keep the
+-- machine's display name stable. A daemon hosts only a handful of runtimes
+-- (one per provider), so this is a tiny read.
+SELECT custom_name FROM agent_runtime
+WHERE workspace_id = @workspace_id
+  AND daemon_id = @daemon_id
+  AND id <> @exclude_id;
 
 
 -- name: TouchAgentRuntimeLastSeen :execrows
@@ -199,6 +275,14 @@ DELETE FROM agent_runtime WHERE id = $1;
 -- name: CountActiveAgentsByRuntime :one
 SELECT count(*) FROM agent WHERE runtime_id = $1 AND archived_at IS NULL;
 
+-- name: CountActiveSquadsWithArchivedLeadersByRuntime :one
+SELECT count(*)
+FROM squad
+WHERE archived_at IS NULL
+  AND leader_id IN (
+    SELECT id FROM agent WHERE runtime_id = $1 AND archived_at IS NOT NULL
+  );
+
 -- name: DeleteArchivedAgentsByRuntime :exec
 DELETE FROM agent WHERE runtime_id = $1 AND archived_at IS NOT NULL;
 
@@ -220,6 +304,18 @@ WHERE status = 'active'
 -- about to be hard-deleted so the runtime teardown can pause autopilots that
 -- still point at them. Returns ids only — the caller only needs the set.
 SELECT id FROM agent WHERE runtime_id = $1 AND archived_at IS NOT NULL;
+
+-- name: DeleteSquadsByArchivedAgentsOnRuntime :exec
+-- Removes archived squads whose leader_id references an archived agent on the
+-- given runtime. Must run before DeleteArchivedAgentsByRuntime so the RESTRICT
+-- FK on squad.leader_id does not block the agent deletion. Active squads are
+-- handled separately by CountActiveSquadsWithArchivedLeadersByRuntime, which
+-- returns a 409 until the caller archives them or assigns a new leader.
+DELETE FROM squad
+WHERE leader_id IN (
+    SELECT id FROM agent WHERE runtime_id = $1 AND archived_at IS NOT NULL
+)
+  AND archived_at IS NOT NULL;
 
 -- name: FindLegacyRuntimesByDaemonID :many
 -- Looks up runtime rows keyed on a prior (hostname-derived) daemon_id. Used

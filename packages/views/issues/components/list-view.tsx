@@ -17,14 +17,13 @@ import {
 import { SortableContext, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
 import { Button } from "@multica/ui/components/ui/button";
-import type { Issue, IssueStatus } from "@multica/core/types";
+import type { Issue, IssueStatus, Project } from "@multica/core/types";
 import { useLoadMoreByStatus } from "@multica/core/issues/mutations";
 import type { IssueSortParam, MyIssuesFilter } from "@multica/core/issues/queries";
-import { useModalStore } from "@multica/core/modals";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
-import { useIssueSelectionStore } from "@multica/core/issues/stores/selection-store";
 import { StatusHeading } from "./status-heading";
 import { ListRow, DraggableListRow, type ChildProgress } from "./list-row";
+import { useDragSettle } from "./use-drag-settle";
 import { InfiniteScrollSentinel } from "./infinite-scroll-sentinel";
 import { useT } from "../../i18n";
 import {
@@ -34,10 +33,13 @@ import {
   buildColumns,
   computePosition,
   findColumn,
+  insertIdByPosition,
   issueMatchesGroup,
   getMoveUpdates,
 } from "../utils/drag-utils";
 import type { BoardColumnGroup } from "./board-column";
+import { useIssueSurfaceSelection } from "../surface/selection-context";
+import type { IssueCreateDefaults } from "../surface/types";
 
 const EMPTY_PROGRESS_MAP = new Map<string, ChildProgress>();
 const EMPTY_IDS: string[] = [];
@@ -55,19 +57,23 @@ export function ListView({
   issues,
   visibleStatuses,
   childProgressMap = EMPTY_PROGRESS_MAP,
+  projectMap,
   myIssuesScope,
   myIssuesFilter,
   projectId,
   onMoveIssue,
+  onCreateIssue,
   sort,
 }: {
   issues: Issue[];
   visibleStatuses: IssueStatus[];
   childProgressMap?: Map<string, ChildProgress>;
+  projectMap?: Map<string, Project>;
   myIssuesScope?: string;
   myIssuesFilter?: MyIssuesFilter;
   projectId?: string;
   onMoveIssue?: (issueId: string, updates: DragMoveUpdates, onSettled?: () => void) => void;
+  onCreateIssue?: (defaults: IssueCreateDefaults) => void;
   sort?: IssueSortParam;
 }) {
   const listCollapsedStatuses = useViewStore(
@@ -113,29 +119,24 @@ export function ListView({
 
   // --- Drag state ---
   const [activeIssue, setActiveIssue] = useState<Issue | null>(null);
-  const isDraggingRef = useRef(false);
-  const isSettlingRef = useRef(false);
-  const [settleVersion, setSettleVersion] = useState(0);
-
-  const [columns, setColumns] = useState<Record<string, string[]>>(() =>
-    buildColumns(issues, groups, "status"),
-  );
-  const columnsRef = useRef(columns);
-  columnsRef.current = columns;
+  // Shared drag/settle primitive (see use-drag-settle) — same machine as
+  // board-view, so the two surfaces can't drift apart.
+  const {
+    columns,
+    setColumns,
+    columnsRef,
+    isDraggingRef,
+    isSettlingRef,
+    recentlyMovedRef,
+    settleVersion,
+    beginSettle,
+  } = useDragSettle(() => buildColumns(issues, groups, "status"));
 
   useEffect(() => {
     if (!isDraggingRef.current && !isSettlingRef.current) {
       setColumns(buildColumns(issues, groups, "status"));
     }
-  }, [issues, groups, settleVersion]);
-
-  const recentlyMovedRef = useRef(false);
-  useEffect(() => {
-    const id = requestAnimationFrame(() => {
-      recentlyMovedRef.current = false;
-    });
-    return () => cancelAnimationFrame(id);
-  }, [columns]);
+  }, [issues, groups, settleVersion, setColumns, isDraggingRef, isSettlingRef]);
 
   const issueMap = useMemo(() => {
     const map = new Map<string, Issue>();
@@ -165,7 +166,7 @@ export function ListView({
       const issue = issueMapRef.current.get(event.active.id as string) ?? null;
       setActiveIssue(issue);
     },
-    [],
+    [isDraggingRef],
   );
 
   const handleDragOver = useCallback(
@@ -192,7 +193,7 @@ export function ListView({
         return { ...prev, [activeCol]: oldIds, [overCol]: newIds };
       });
     },
-    [groupIds, sortBy],
+    [groupIds, sortBy, recentlyMovedRef, setColumns],
   );
 
   const handleDragEnd = useCallback(
@@ -253,11 +254,23 @@ export function ListView({
           resetColumns();
           return;
         }
-        isSettlingRef.current = true;
-        onMoveIssue(activeId, getMoveUpdates(finalGroup, currentIssue.position), () => {
-          isSettlingRef.current = false;
-          setSettleVersion((v) => v + 1);
+        // Optimistically move the row into the target group *now*. Without this
+        // the sortBy != "position" branch never touched local columns on drop,
+        // so the row sat in its origin group for the whole request and only
+        // jumped across when the mutation settled — the same "snaps back, then
+        // moves" glitch the board view had. Placement mirrors the cache
+        // (insertIdByPosition) so the settle rebuild is a visual no-op.
+        setColumns((prev) => {
+          const fromIds = (prev[activeCol] ?? []).filter((cid) => cid !== activeId);
+          const toIds = insertIdByPosition(
+            prev[finalCol] ?? [],
+            activeId,
+            currentIssue.position,
+            map,
+          );
+          return { ...prev, [activeCol]: fromIds, [finalCol]: toIds };
         });
+        onMoveIssue(activeId, getMoveUpdates(finalGroup, currentIssue.position), beginSettle());
         return;
       }
 
@@ -273,12 +286,12 @@ export function ListView({
         return;
       }
 
-      isSettlingRef.current = true;
-      onMoveIssue(activeId, getMoveUpdates(finalGroup, newPosition), () => {
-        isSettlingRef.current = false;
-      });
+      // beginSettle() also bumps settleVersion on settle (board-view did, this
+      // branch did not) so a failed position move reverts instead of stranding
+      // the row at the drop target.
+      onMoveIssue(activeId, getMoveUpdates(finalGroup, newPosition), beginSettle());
     },
-    [issues, groups, onMoveIssue, groupIds, groupMap, sortBy],
+    [issues, groups, onMoveIssue, groupIds, groupMap, sortBy, beginSettle, setColumns, columnsRef, isDraggingRef],
   );
 
   const content = (
@@ -306,8 +319,10 @@ export function ListView({
             issueIds={columns[statusGroupId(status)] ?? EMPTY_IDS}
             issueMap={issueMapRef.current}
             childProgressMap={childProgressMap}
+            projectMap={projectMap}
             myIssuesOpts={myIssuesOpts}
             projectId={projectId}
+            onCreateIssue={onCreateIssue}
             dragEnabled={dragEnabled}
             isExpanded={isExpanded}
             sortLabel={sortLabel}
@@ -355,8 +370,10 @@ function StatusAccordionItem({
   issueIds,
   issueMap,
   childProgressMap,
+  projectMap,
   myIssuesOpts,
   projectId,
+  onCreateIssue,
   dragEnabled,
   isExpanded,
   sortLabel,
@@ -366,17 +383,20 @@ function StatusAccordionItem({
   issueIds: string[];
   issueMap: Map<string, Issue>;
   childProgressMap: Map<string, ChildProgress>;
+  projectMap?: Map<string, Project>;
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
   projectId?: string;
+  onCreateIssue?: (defaults: IssueCreateDefaults) => void;
   dragEnabled: boolean;
   isExpanded: boolean;
   sortLabel: string | null;
   sort?: IssueSortParam;
 }) {
   const { t } = useT("issues");
-  const selectedIds = useIssueSelectionStore((s) => s.selectedIds);
-  const select = useIssueSelectionStore((s) => s.select);
-  const deselect = useIssueSelectionStore((s) => s.deselect);
+  const selection = useIssueSurfaceSelection();
+  const selectedIds = selection.selectedIds;
+  const select = selection.select;
+  const deselect = selection.deselect;
   const { loadMore, hasMore, isLoading, total } = useLoadMoreByStatus(
     status,
     myIssuesOpts,
@@ -432,27 +452,31 @@ function StatusAccordionItem({
           <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-aria-expanded/trigger:rotate-90" />
           <StatusHeading status={status} count={total} />
         </Accordion.Trigger>
-        <div className="pr-2">
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="rounded-full text-muted-foreground opacity-0 group-hover/header:opacity-100 transition-opacity"
-                  onClick={() =>
-                    useModalStore
-                      .getState()
-                      .open("create-issue", { status, ...(projectId ? { project_id: projectId } : {}) })
-                  }
-                />
-              }
-            >
-              <Plus className="size-3.5" />
-            </TooltipTrigger>
-            <TooltipContent>{t(($) => $.list.add_issue_tooltip)}</TooltipContent>
-          </Tooltip>
-        </div>
+        {onCreateIssue && (
+          <div className="pr-2">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="rounded-full text-muted-foreground opacity-0 group-hover/header:opacity-100 transition-opacity"
+                    onClick={() => {
+                      const defaults = {
+                        status,
+                        ...(projectId ? { project_id: projectId } : {}),
+                      };
+                      onCreateIssue(defaults);
+                    }}
+                  />
+                }
+              >
+                <Plus className="size-3.5" />
+              </TooltipTrigger>
+              <TooltipContent>{t(($) => $.list.add_issue_tooltip)}</TooltipContent>
+            </Tooltip>
+          </div>
+        )}
       </Accordion.Header>
       <Accordion.Panel>
         {issues.length > 0 ? (
@@ -463,6 +487,9 @@ function StatusAccordionItem({
                   key={issue.id}
                   issue={issue}
                   childProgress={childProgressMap.get(issue.id)}
+                  project={
+                    issue.project_id ? projectMap?.get(issue.project_id) : undefined
+                  }
                   disableSorting={disableSorting}
                 />
               ))}
@@ -473,7 +500,14 @@ function StatusAccordionItem({
           ) : (
             <>
               {issues.map((issue) => (
-                <ListRow key={issue.id} issue={issue} childProgress={childProgressMap.get(issue.id)} />
+                <ListRow
+                  key={issue.id}
+                  issue={issue}
+                  childProgress={childProgressMap.get(issue.id)}
+                  project={
+                    issue.project_id ? projectMap?.get(issue.project_id) : undefined
+                  }
+                />
               ))}
               {hasMore && (
                 <InfiniteScrollSentinel onVisible={loadMore} loading={isLoading} />

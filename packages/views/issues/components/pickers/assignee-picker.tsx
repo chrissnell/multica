@@ -40,6 +40,7 @@ export function canAssignAgent(
 export function AssigneePicker({
   assigneeType,
   assigneeId,
+  mixed = false,
   onUpdate,
   trigger: customTrigger,
   triggerRender,
@@ -49,6 +50,13 @@ export function AssigneePicker({
 }: {
   assigneeType: IssueAssigneeType | null;
   assigneeId: string | null;
+  /**
+   * `true` when a batch selection spans different assignees ("mixed"): no row
+   * is checked, including the unassigned row. Distinct from `assigneeType` /
+   * `assigneeId` both being `null`, which means every selected issue is
+   * genuinely unassigned and the unassigned row should be checked.
+   */
+  mixed?: boolean;
   onUpdate: (updates: Partial<UpdateIssueRequest>) => void;
   trigger?: React.ReactNode;
   triggerRender?: React.ReactElement;
@@ -118,7 +126,7 @@ export function AssigneePicker({
       trigger={
         customTrigger ? customTrigger : assigneeType && assigneeId ? (
           <>
-            <ActorAvatar actorType={assigneeType} actorId={assigneeId} size={18} enableHoverCard showStatusDot />
+            <ActorAvatar actorType={assigneeType} actorId={assigneeId} size="sm" enableHoverCard showStatusDot />
             <span className="truncate">{triggerLabel}</span>
           </>
         ) : (
@@ -129,7 +137,7 @@ export function AssigneePicker({
       {/* Unassigned option — hidden when search is active */}
       {!query && (
         <PickerItem
-          selected={!assigneeType && !assigneeId}
+          selected={!mixed && !assigneeType && !assigneeId}
           onClick={() => {
             onUpdate({ assignee_type: null, assignee_id: null });
             setOpen(false);
@@ -155,7 +163,7 @@ export function AssigneePicker({
                 setOpen(false);
               }}
             >
-              <ActorAvatar actorType="member" actorId={m.user_id} size={18} />
+              <ActorAvatar actorType="member" actorId={m.user_id} size="sm" />
               <span className="truncate">{m.name}</span>
             </PickerItem>
           ))}
@@ -191,7 +199,7 @@ export function AssigneePicker({
                   setOpen(false);
                 }}
               >
-                <ActorAvatar actorType="agent" actorId={a.id} size={18} showStatusDot />
+                <ActorAvatar actorType="agent" actorId={a.id} size="sm" showStatusDot />
                 <span className={`truncate ${allowed ? "" : "text-muted-foreground"}`}>{a.name}</span>
                 {a.visibility === "private" && (
                   <Lock className="ml-auto h-3 w-3 text-muted-foreground" />
@@ -218,7 +226,7 @@ export function AssigneePicker({
                 setOpen(false);
               }}
             >
-              <ActorAvatar actorType="squad" actorId={s.id} size={18} />
+              <ActorAvatar actorType="squad" actorId={s.id} size="sm" />
               <span className="truncate">{s.name}</span>
             </PickerItem>
           ))}

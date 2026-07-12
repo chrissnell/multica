@@ -31,6 +31,7 @@ export const mockWorkspace: Workspace = {
   settings: {},
   repos: [],
   issue_prefix: "TES",
+  avatar_url: null,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 };
@@ -64,6 +65,8 @@ export const mockAgents: Agent[] = [
     runtime_config: {},
     custom_args: [],
     visibility: "workspace",
+    permission_mode: "public_to",
+    invocation_targets: [{ target_type: "workspace", target_id: null }],
     max_concurrent_tasks: 3,
     model: "",
     owner_id: null,
