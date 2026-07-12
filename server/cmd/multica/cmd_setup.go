@@ -207,6 +207,13 @@ func runSetupSelfHost(cmd *cobra.Command, args []string) error {
 	// clear the CF Access edge without a working browser cookie.
 	cfAccessID := cli.FlagOrEnv(cmd, "cf-access-client-id", "CF_ACCESS_CLIENT_ID", existing.CFAccessClientID)
 	cfAccessSecret := cli.FlagOrEnv(cmd, "cf-access-client-secret", "CF_ACCESS_CLIENT_SECRET", existing.CFAccessClientSecret)
+	// Fail loud on a half-pair now rather than silently persisting it and
+	// letting setHeaders drop it at request time — the drop would just
+	// regenerate the exact "server unreachable" symptom this integration
+	// exists to fix, with no indication of the underlying config mistake.
+	if (cfAccessID == "") != (cfAccessSecret == "") {
+		return fmt.Errorf("--cf-access-client-id and --cf-access-client-secret must both be set (or both unset); Cloudflare Access rejects a request presenting only one header")
+	}
 	cli.SetCFAccessDefaults(cfAccessID, cfAccessSecret)
 
 	if appURL == "" {

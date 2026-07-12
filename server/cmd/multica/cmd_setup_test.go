@@ -76,6 +76,53 @@ func TestPersistSelfHostConfigIfReachable(t *testing.T) {
 	})
 }
 
+// TestSetupSelfHost_RejectsCFAccessHalfPair covers the fix for the silent
+// half-pair-persistence footgun: without this guard `setup self-host` would
+// happily save a config with only cf_access_client_id (or only the secret),
+// setHeaders would drop the incomplete pair at every request, and the user
+// would see the exact same "the server could not issue an access token for
+// the CLI" symptom that this whole integration exists to fix — this time
+// with no clue as to why. Fail loud at setup time instead.
+func TestSetupSelfHost_RejectsCFAccessHalfPair(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Cleanup(func() { cli.SetCFAccessDefaults("", "") })
+
+	// Isolate from ambient env — CI runners may have CF_ACCESS_* set for
+	// their own CF Access posture, which would satisfy the pair guard and
+	// make this test a false negative.
+	t.Setenv("CF_ACCESS_CLIENT_ID", "")
+	t.Setenv("CF_ACCESS_CLIENT_SECRET", "")
+	t.Setenv("MULTICA_SERVER_URL", "")
+	t.Setenv("MULTICA_APP_URL", "")
+
+	cmd := &cobra.Command{}
+	cmd.Flags().String("server-url", "", "")
+	cmd.Flags().String("app-url", "", "")
+	cmd.Flags().Int("port", 8080, "")
+	cmd.Flags().Int("frontend-port", 3000, "")
+	cmd.Flags().String("callback-host", "", "")
+	cmd.Flags().String("cf-access-client-id", "", "")
+	cmd.Flags().String("cf-access-client-secret", "", "")
+	cmd.Flags().String("profile", "", "")
+
+	_ = cmd.Flags().Set("server-url", "http://127.0.0.1:8080")
+	_ = cmd.Flags().Set("app-url", "http://127.0.0.1:3000")
+	_ = cmd.Flags().Set("cf-access-client-id", "abcd1234.access")
+	// Deliberately omit --cf-access-client-secret.
+
+	stderr := captureStderr(t)
+	defer stderr.restore()
+
+	err := runSetupSelfHost(cmd, nil)
+	_ = stderr.read()
+	if err == nil {
+		t.Fatalf("runSetupSelfHost with half-pair: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "both be set") {
+		t.Fatalf("runSetupSelfHost error = %v, want both-be-set complaint", err)
+	}
+}
+
 // TestResolveSelfHostServerURL covers GitHub #3912: `setup self-host` must
 // honor MULTICA_SERVER_URL when --server-url is not passed, instead of always
 // defaulting to localhost (which left self-hosters stuck on an "unreachable"
