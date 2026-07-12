@@ -188,3 +188,24 @@ jobs:
 
       - name: Test shell installers
         run: bash scripts/install.test.sh
+
+  packaging:
+    # Hermetic packaging tests: helm-render (needs the helm binary),
+    # runtime-path, and release-preflight (git/gh stubbed). Fast and
+    # serviceless, so they run on every PR. This is the gate that catches
+    # a scheduled upstream merge quietly breaking the fork's Helm chart —
+    # see .github/workflows/upstream-tracking.yml.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Run packaging tests
+        run: |
+          for t in packaging/scripts/tests/test-*.sh; do
+            echo "==> $t"
+            bash "$t"
+          done
