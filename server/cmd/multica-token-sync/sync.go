@@ -62,11 +62,16 @@ func (d SyncDirection) String() string {
 }
 
 // SyncResult captures the per-sync outcome for the caller / logs.
+//
+// Fingerprints are computed over the same keychain-shape payload on both
+// pull and push, so a fingerprint observed here can be cross-referenced
+// against broker log lines that carry the same token pair even though the
+// broker only ever sees the three-key Secret form.
 type SyncResult struct {
 	Direction      SyncDirection
 	Wrote          bool
 	OldFingerprint string // sha256 hex of the prior Keychain blob (empty if absent)
-	NewFingerprint string // sha256 hex of the freshly built blob (empty on push — see below)
+	NewFingerprint string // sha256 hex of the freshly built blob
 }
 
 // SyncOnce reconciles broker Secret ⇄ Mac Keychain.
@@ -88,22 +93,27 @@ func SyncOnce(ctx context.Context, cfg *Config, k kubernetes.Interface, kc Keych
 	}
 
 	existing, kcErr := kc.Read(cfg.KeychainService, cfg.KeychainAccount)
-	kcOAuth, kcExpires, kcParsed := parseKeychain(existing, kcErr)
+	kcOAuth, kcExpires, kcParsed := parseKeychain(existing, kcErr, logger)
 
 	if shouldPush(kcOAuth, kcExpires, kcParsed, kState) {
 		return pushToBroker(ctx, cfg, k, kcOAuth, kcExpires, existing, logger)
 	}
-	return pullToKeychain(ctx, cfg, kc, kState, existing, logger)
+	return pullToKeychain(cfg, kc, kState, existing, logger)
 }
 
 // parseKeychain tolerates a missing / malformed keychain payload — either
 // case falls through to a pull, which will overwrite it with a valid one.
-func parseKeychain(existing []byte, readErr error) (oauthBlob, time.Time, bool) {
+// A missing entry (readErr) is expected on first run and stays silent; an
+// unmarshal failure of an existing entry is logged loudly because that's
+// the earliest surfaceable sign of on-disk keychain corruption, and the
+// pull that follows would otherwise erase the evidence without a trace.
+func parseKeychain(existing []byte, readErr error, logger *slog.Logger) (oauthBlob, time.Time, bool) {
 	if readErr != nil || len(existing) == 0 {
 		return oauthBlob{}, time.Time{}, false
 	}
 	var p keychainPayload
 	if err := json.Unmarshal(existing, &p); err != nil {
+		logger.Warn("keychain payload unparseable; will overwrite from broker", "error", err)
 		return oauthBlob{}, time.Time{}, false
 	}
 	var exp time.Time
@@ -144,9 +154,10 @@ func shouldPush(kcOAuth oauthBlob, kcExpires time.Time, kcParsed bool, kState *B
 
 // pullToKeychain: broker is truth. Build the payload the broker's state
 // implies and write it if the keychain diverges. This is the steady-state
-// path when the broker is healthy.
-func pullToKeychain(ctx context.Context, cfg *Config, kc Keychain, state *BrokerState, existing []byte, logger *slog.Logger) (*SyncResult, error) {
-	_ = ctx // reserved for future k8s-write reconcile; keychain writes are local
+// path when the broker is healthy. No ctx parameter because keychain
+// writes are local; a future context-aware variant will come back as an
+// explicit signature change.
+func pullToKeychain(cfg *Config, kc Keychain, state *BrokerState, existing []byte, logger *slog.Logger) (*SyncResult, error) {
 	payload := keychainPayload{ClaudeAiOauth: oauthBlob{
 		AccessToken:      state.AccessToken,
 		RefreshToken:     state.RefreshToken,
@@ -201,12 +212,31 @@ func pullToKeychain(ctx context.Context, cfg *Config, kc Keychain, state *Broker
 // refresh; racing it here would leave the mirror and state Secrets pointing
 // at a token the broker still thinks is stale.
 func pushToBroker(ctx context.Context, cfg *Config, k kubernetes.Interface, kcOAuth oauthBlob, kcExpires time.Time, existing []byte, logger *slog.Logger) (*SyncResult, error) {
-	result := &SyncResult{Direction: DirectionPush}
+	// Fingerprint the outgoing payload in the same keychain-shape used by
+	// the pull path, so operators and future metrics can correlate a push
+	// event with the pull that eventually re-synchronises the keychain
+	// after the broker's reseed refresh.
+	pushed := keychainPayload{ClaudeAiOauth: oauthBlob{
+		AccessToken:      kcOAuth.AccessToken,
+		RefreshToken:     kcOAuth.RefreshToken,
+		ExpiresAt:        kcExpires.UnixMilli(),
+		Scopes:           defaultScopes,
+		SubscriptionType: "max",
+	}}
+	newBytes, err := json.Marshal(pushed)
+	if err != nil {
+		return nil, fmt.Errorf("marshal push payload: %w", err)
+	}
+	newFP := fingerprint(newBytes)
+
+	result := &SyncResult{Direction: DirectionPush, NewFingerprint: newFP}
 	if len(existing) > 0 {
 		result.OldFingerprint = fingerprint(existing)
 	}
 
 	logger.Info("keychain fresher than broker, pushing up to reseed",
+		"from", result.OldFingerprint,
+		"to", newFP,
 		"keychain_expires_at", kcExpires.Format(time.RFC3339))
 
 	if cfg.DryRun {
@@ -226,6 +256,7 @@ func pushToBroker(ctx context.Context, cfg *Config, k kubernetes.Interface, kcOA
 	logger.Info("broker state reseeded from keychain",
 		"namespace", cfg.Namespace,
 		"secret", cfg.SecretName,
+		"fingerprint", newFP,
 		"expires_at", kcExpires.Format(time.RFC3339))
 	return result, nil
 }

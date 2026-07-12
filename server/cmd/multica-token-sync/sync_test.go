@@ -57,7 +57,9 @@ func getSecretTokens(t *testing.T, k *fake.Clientset, ns, name string) (access, 
 	if err != nil {
 		t.Fatalf("get secret %s/%s: %v", ns, name, err)
 	}
-	// Patches via strategic-merge on stringData surface as Data on read.
+	// WriteBrokerState uses JSON-merge patch against `.data` (base64
+	// values), which the fake clientset applies directly to `.Data`, so a
+	// plain Get here recovers the pushed bytes without walking stringData.
 	if v, ok := sec.Data["access_token"]; ok {
 		access = string(v)
 	}

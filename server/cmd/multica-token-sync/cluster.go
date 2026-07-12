@@ -71,9 +71,11 @@ func ReadBrokerState(ctx context.Context, k kubernetes.Interface, namespace, nam
 // runs observeAndCheckReseed against the new refresh_token, treats it as an
 // operator reseed, and exchanges it — self-healing the loop.
 //
-// Uses a strategic-merge patch so we never touch other keys the broker (or
-// operators) may have annotated on the Secret. Format matches SecretStore.Store
-// so downstream reads see identical byte-for-byte state.
+// Format matches SecretStore.Store (RFC3339 without an explicit .UTC()
+// conversion) so downstream reads see identical byte-for-byte state. The
+// input state.ExpiresAt is required to already be UTC — parseKeychain
+// normalises to UTC at read time, so this holds automatically for values
+// flowing through the reconciler.
 func WriteBrokerState(ctx context.Context, k kubernetes.Interface, namespace, name string, state *BrokerState) error {
 	if state == nil || state.AccessToken == "" || state.RefreshToken == "" {
 		return fmt.Errorf("refuse to write empty broker state")
@@ -89,7 +91,7 @@ func WriteBrokerState(ctx context.Context, k kubernetes.Interface, namespace, na
 		"data": map[string]string{
 			"access_token":  base64.StdEncoding.EncodeToString([]byte(state.AccessToken)),
 			"refresh_token": base64.StdEncoding.EncodeToString([]byte(state.RefreshToken)),
-			"expires_at":    base64.StdEncoding.EncodeToString([]byte(state.ExpiresAt.UTC().Format(time.RFC3339))),
+			"expires_at":    base64.StdEncoding.EncodeToString([]byte(state.ExpiresAt.Format(time.RFC3339))),
 		},
 	}
 	patchBytes, err := json.Marshal(patch)
@@ -106,7 +108,7 @@ func WriteBrokerState(ctx context.Context, k kubernetes.Interface, namespace, na
 			Data: map[string][]byte{
 				"access_token":  []byte(state.AccessToken),
 				"refresh_token": []byte(state.RefreshToken),
-				"expires_at":    []byte(state.ExpiresAt.UTC().Format(time.RFC3339)),
+				"expires_at":    []byte(state.ExpiresAt.Format(time.RFC3339)),
 			},
 		}
 		_, err = k.CoreV1().Secrets(namespace).Create(ctx, sec, metav1.CreateOptions{})
