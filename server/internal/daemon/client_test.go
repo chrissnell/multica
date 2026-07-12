@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -78,6 +79,90 @@ func TestClient_IdentityHeaders_GetJSON(t *testing.T) {
 	var out map[string]any
 	if err := c.getJSON(context.Background(), "/api/daemon/test", &out); err != nil {
 		t.Fatalf("getJSON: %v", err)
+	}
+}
+
+// TestClient_CFAccessHeadersSentWhenConfigured guards against the bug where
+// the daemon's HTTP client — separate from cli.APIClient — silently omitted
+// Cloudflare Access service-token headers even after the same credentials had
+// been persisted to config. On a CF-Zero-Trust-fronted origin the omission
+// surfaced as "invalid character '<' looking for beginning of value" from
+// every daemon call, because CF Access was 302ing the request to an HTML
+// login page and the JSON decoder was reading `<html>`.
+func TestClient_CFAccessHeadersSentWhenConfigured(t *testing.T) {
+	// Isolate from ambient env — CI runners may have CF_ACCESS_* set.
+	t.Setenv("CF_ACCESS_CLIENT_ID", "")
+	t.Setenv("CF_ACCESS_CLIENT_SECRET", "")
+	t.Cleanup(func() { cli.SetCFAccessDefaults("", "") })
+
+	cli.SetCFAccessDefaults("id-from-config", "secret-from-config")
+
+	got := make(chan http.Header, 2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	c.SetToken("tok")
+
+	t.Run("postJSON", func(t *testing.T) {
+		if err := c.postJSON(context.Background(), "/api/daemon/test", map[string]any{}, nil); err != nil {
+			t.Fatalf("postJSON: %v", err)
+		}
+		h := <-got
+		if id := h.Get("CF-Access-Client-Id"); id != "id-from-config" {
+			t.Errorf("CF-Access-Client-Id: got %q, want id-from-config", id)
+		}
+		if s := h.Get("CF-Access-Client-Secret"); s != "secret-from-config" {
+			t.Errorf("CF-Access-Client-Secret: got %q, want secret-from-config", s)
+		}
+	})
+
+	t.Run("getJSON", func(t *testing.T) {
+		var out map[string]any
+		if err := c.getJSON(context.Background(), "/api/daemon/test", &out); err != nil {
+			t.Fatalf("getJSON: %v", err)
+		}
+		h := <-got
+		if id := h.Get("CF-Access-Client-Id"); id != "id-from-config" {
+			t.Errorf("CF-Access-Client-Id: got %q, want id-from-config", id)
+		}
+	})
+}
+
+// TestClient_CFAccessHeadersOmittedWhenUnconfigured — the daemon must not
+// stamp CF-Access-Client-* headers when neither env nor config supplies a
+// pair. Otherwise a non-CF-Access deploy would send empty headers that some
+// intermediaries reject with 400.
+func TestClient_CFAccessHeadersOmittedWhenUnconfigured(t *testing.T) {
+	t.Setenv("CF_ACCESS_CLIENT_ID", "")
+	t.Setenv("CF_ACCESS_CLIENT_SECRET", "")
+	t.Cleanup(func() { cli.SetCFAccessDefaults("", "") })
+	cli.SetCFAccessDefaults("", "")
+
+	got := make(chan http.Header, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	c.SetToken("tok")
+
+	if err := c.postJSON(context.Background(), "/api/daemon/test", map[string]any{}, nil); err != nil {
+		t.Fatalf("postJSON: %v", err)
+	}
+	h := <-got
+	if v := h.Get("CF-Access-Client-Id"); v != "" {
+		t.Errorf("CF-Access-Client-Id: got %q, want empty", v)
+	}
+	if v := h.Get("CF-Access-Client-Secret"); v != "" {
+		t.Errorf("CF-Access-Client-Secret: got %q, want empty", v)
 	}
 }
 
