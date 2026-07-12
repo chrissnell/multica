@@ -202,6 +202,17 @@ func SetCFAccessHeaders(h http.Header) {
 	}
 }
 
+// CFAccessCredentials returns the currently-configured CF Access service-token
+// pair (env-first, then persisted config via SetCFAccessDefaults), or
+// ("", "") when none is configured. Exported so the daemon can forward the
+// pair into a spawned agent's env — the agent runs as a subprocess and would
+// otherwise have no access to either the daemon's env or the persisted
+// config, so `multica` subcommands invoked from inside the agent would omit
+// the CF headers and the whole run would 302 to the CF Access login page.
+func CFAccessCredentials() (id, secret string) {
+	return cfAccessHeaders()
+}
+
 // cfAccessHeaders returns the CF Access service-token credentials to send on
 // the next request, or ("", "") when none are configured. Env vars beat the
 // defaults set via SetCFAccessDefaults, and both halves must be non-empty for
