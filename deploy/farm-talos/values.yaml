@@ -6,7 +6,7 @@ image:
   registry: registry.chrissnell.com/multica
   pullSecret: registry-credentials
   pullPolicy: IfNotPresent
-  tag: v0.4.0-mk25
+  tag: v0.4.0-mk26
   tags:
     # PG 17 + pgvector v0.7.4 have been unchanged from mk3 through the current
     # top-level — pure rebuilds — so pin postgres at mk3 to avoid bouncing the
@@ -18,7 +18,7 @@ image:
   # Humans don't edit these — image-release.yml owns the file.
   digests:
     runtimeClaude: "sha256:e5e5426c820cae4fc6ed4acfc5c5e4e91bb476df21f46dea1e88e35ab5ae0b28"
-    backend: sha256:bd38ab7c1fe66efc84c50c8ec8d58b59cbe151cd03d7f34a3f4110804740df3b
+    backend: sha256:66319928c84a6256bc6ed6e2ab41bff215cfd66fd90ddcc39a65109c2d390b43
     web: sha256:83ef0e462c340b3ac1ff3661bf8817b3b9f4608030d466cca48ba738284217ba
     controller: sha256:3480fed02866f8eb8ef0245e2df9aa48df73ecb64610600dd0343d629ee3f1ff
     claudeBroker: sha256:4f56cdf0ceb8b2acb5d465ecd654c4efc280e325f508a1037e7de5671bc784bc
