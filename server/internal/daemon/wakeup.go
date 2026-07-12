@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -109,6 +110,15 @@ func (d *Daemon) runTaskWakeupConnection(ctx context.Context, runtimeIDs []strin
 	if d.client.os != "" {
 		headers.Set("X-Client-OS", d.client.os)
 	}
+	// CF Access sits in front of every non-browser call to a Zero-Trust-
+	// fronted origin, including the WS upgrade for /ws/daemon/task-wakeup.
+	// Without these headers CF Access 302s the upgrade, gorilla/websocket
+	// surfaces that as "bad handshake", and the daemon silently falls back
+	// to HTTP polling — functionality is preserved but sub-second task
+	// wakeup is lost. Reuse the same helper the HTTP paths use so a single
+	// call site controls "does this origin need CF Access?" across every
+	// outbound daemon protocol.
+	cli.SetCFAccessHeaders(headers)
 
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
 	conn, _, err := dialer.DialContext(ctx, wsURL, headers)
