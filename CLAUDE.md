@@ -110,6 +110,7 @@ CI runs Node 22, Go 1.26.1, and a `pgvector/pgvector:pg17` PostgreSQL service.
 - Reserved slugs live in `server/internal/handler/reserved_slugs.json`. Edit it, run `pnpm generate:reserved-slugs`, and commit the generated `packages/core/paths/reserved-slugs.ts`.
 - When changing CLI commands/flags, API fields, or product behavior documented by built-in skills under `server/internal/service/builtin_skills/*`, update the relevant `SKILL.md` and `references/*-source-map.md` in the same PR.
 - **Fork-local DB migrations live in a reserved `9000+` band**, never in the low-numbered range upstream owns and keeps climbing through. Add new fork migrations as `9002_…`, `9003_…`. See `server/migrations/README.md` for the rationale and the one-time `111 → 9001` fixup.
+- **Merging upstream (`multica-ai/multica`) is a scheduled, merge-not-rebase, never-squash routine.** Before running or reviewing an upstream merge, read `docs/upstream-tracking.md` (remote convention, tracking decision, staged conflict resolution, UI-retention rule). The `upstream-tracking` workflow opens the merge PRs; `scripts/upstream-merge.sh` drives it locally.
 
 ## API Compatibility
 
