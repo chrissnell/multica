@@ -9,8 +9,9 @@
 //   - handleModelList()              -> BuildModelListPayload()
 //
 // coAuthoredByEnabledFromSettings, fetchCoAuthoredByEnabled and
-// BuildModelListPayload are additive and are also called from controller-mode
-// code (health_fork.go, the k8s controller).
+// BuildModelListPayload are additive: the co-authored-by helpers back the
+// controller-mode checkout handler in health_fork.go, and BuildModelListPayload
+// is also called by the k8s controller's heartbeat handler.
 
 package daemon
 
