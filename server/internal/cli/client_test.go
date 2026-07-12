@@ -414,6 +414,123 @@ func TestUploadFileWithURL(t *testing.T) {
 	})
 }
 
+// TestCFAccessHeaders_EnvOverridesConfig covers the Cloudflare Access
+// service-token header injection: when both a persisted config default (set
+// via SetCFAccessDefaults) and env vars are present, the env vars must win
+// on the wire — matching the convention used by `cloudflared access curl` and
+// letting a one-off shell override beat a saved token without editing config.
+// Also verifies that a partial pair (only ID or only Secret) is dropped
+// entirely; CF Access rejects a request presenting only one header, so
+// sending half a pair would just yield a confusing 401.
+func TestCFAccessHeaders_EnvOverridesConfig(t *testing.T) {
+	t.Cleanup(func() { SetCFAccessDefaults("", "") })
+
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	SetCFAccessDefaults("cfg-id", "cfg-secret")
+
+	t.Run("config-only fallback when env unset", func(t *testing.T) {
+		t.Setenv("CF_ACCESS_CLIENT_ID", "")
+		t.Setenv("CF_ACCESS_CLIENT_SECRET", "")
+
+		client := NewAPIClient(srv.URL, "", "")
+		if err := client.GetJSON(context.Background(), "/", nil); err != nil {
+			t.Fatalf("GetJSON: %v", err)
+		}
+		if got.Get("CF-Access-Client-Id") != "cfg-id" {
+			t.Errorf("CF-Access-Client-Id: got %q, want cfg-id", got.Get("CF-Access-Client-Id"))
+		}
+		if got.Get("CF-Access-Client-Secret") != "cfg-secret" {
+			t.Errorf("CF-Access-Client-Secret: got %q, want cfg-secret", got.Get("CF-Access-Client-Secret"))
+		}
+	})
+
+	t.Run("env wins when both set", func(t *testing.T) {
+		t.Setenv("CF_ACCESS_CLIENT_ID", "env-id")
+		t.Setenv("CF_ACCESS_CLIENT_SECRET", "env-secret")
+
+		client := NewAPIClient(srv.URL, "", "")
+		if err := client.GetJSON(context.Background(), "/", nil); err != nil {
+			t.Fatalf("GetJSON: %v", err)
+		}
+		if got.Get("CF-Access-Client-Id") != "env-id" {
+			t.Errorf("CF-Access-Client-Id: got %q, want env-id", got.Get("CF-Access-Client-Id"))
+		}
+		if got.Get("CF-Access-Client-Secret") != "env-secret" {
+			t.Errorf("CF-Access-Client-Secret: got %q, want env-secret", got.Get("CF-Access-Client-Secret"))
+		}
+	})
+
+	t.Run("partial env pair is ignored, config still applies", func(t *testing.T) {
+		t.Setenv("CF_ACCESS_CLIENT_ID", "env-id-only")
+		t.Setenv("CF_ACCESS_CLIENT_SECRET", "")
+
+		client := NewAPIClient(srv.URL, "", "")
+		if err := client.GetJSON(context.Background(), "/", nil); err != nil {
+			t.Fatalf("GetJSON: %v", err)
+		}
+		if got.Get("CF-Access-Client-Id") != "cfg-id" {
+			t.Errorf("CF-Access-Client-Id: got %q, want cfg-id (env pair incomplete)", got.Get("CF-Access-Client-Id"))
+		}
+	})
+
+	t.Run("no headers when neither env nor config set", func(t *testing.T) {
+		t.Setenv("CF_ACCESS_CLIENT_ID", "")
+		t.Setenv("CF_ACCESS_CLIENT_SECRET", "")
+		SetCFAccessDefaults("", "")
+
+		client := NewAPIClient(srv.URL, "", "")
+		if err := client.GetJSON(context.Background(), "/", nil); err != nil {
+			t.Fatalf("GetJSON: %v", err)
+		}
+		if v := got.Get("CF-Access-Client-Id"); v != "" {
+			t.Errorf("CF-Access-Client-Id: got %q, want empty", v)
+		}
+		if v := got.Get("CF-Access-Client-Secret"); v != "" {
+			t.Errorf("CF-Access-Client-Secret: got %q, want empty", v)
+		}
+	})
+}
+
+// TestLoadCLIConfigForProfile_PromotesCFAccessDefaults verifies the loader
+// side-effect that ties config to the http client: loading a config file
+// with cf_access_client_id / cf_access_client_secret must push those into
+// the package defaults so subsequent APIClient requests carry the headers
+// without each call site having to plumb them through. Critical for the
+// daemon, which loads config once at startup and then relies on setHeaders
+// to attach CF Access credentials to every long-poll request.
+func TestLoadCLIConfigForProfile_PromotesCFAccessDefaults(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CF_ACCESS_CLIENT_ID", "")
+	t.Setenv("CF_ACCESS_CLIENT_SECRET", "")
+	t.Cleanup(func() { SetCFAccessDefaults("", "") })
+	SetCFAccessDefaults("", "")
+
+	seed := CLIConfig{
+		ServerURL:            "https://api.example",
+		AppURL:               "https://app.example",
+		CFAccessClientID:     "persisted-id",
+		CFAccessClientSecret: "persisted-secret",
+	}
+	if err := SaveCLIConfig(seed); err != nil {
+		t.Fatalf("save seed config: %v", err)
+	}
+
+	if _, err := LoadCLIConfig(); err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	id, secret := cfAccessHeaders()
+	if id != "persisted-id" || secret != "persisted-secret" {
+		t.Fatalf("cfAccessHeaders after load = (%q, %q); want persisted values", id, secret)
+	}
+}
+
 func TestNormalizeGOOS(t *testing.T) {
 	cases := map[string]string{
 		"darwin":  "macos",

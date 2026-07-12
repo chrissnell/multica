@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -161,6 +162,49 @@ func NewAPIClient(baseURL, workspaceID, token string) *APIClient {
 	}
 }
 
+// cfAccess holds the fallback CF Access service-token credentials used when
+// the caller has not exported the standard CF_ACCESS_CLIENT_ID /
+// CF_ACCESS_CLIENT_SECRET env vars. The daemon runs under launchd/systemd
+// where the operator's interactive shell env is not inherited, so we also
+// source these from ~/.multica/config.json — LoadCLIConfigForProfile calls
+// SetCFAccessDefaults on every load. Env vars win when both are set so a
+// one-off shell override always beats the persisted config.
+var (
+	cfAccessMu     sync.RWMutex
+	cfAccessID     string
+	cfAccessSecret string
+)
+
+// SetCFAccessDefaults records the fallback CF Access service-token
+// credentials used by setHeaders when neither CF_ACCESS_CLIENT_ID nor
+// CF_ACCESS_CLIENT_SECRET is set in the environment. Passing empty values
+// clears the fallback.
+func SetCFAccessDefaults(id, secret string) {
+	cfAccessMu.Lock()
+	cfAccessID = strings.TrimSpace(id)
+	cfAccessSecret = strings.TrimSpace(secret)
+	cfAccessMu.Unlock()
+}
+
+// cfAccessHeaders returns the CF Access service-token credentials to send on
+// the next request, or ("", "") when none are configured. Env vars beat the
+// defaults set via SetCFAccessDefaults, and both halves must be non-empty for
+// either to be returned (CF Access rejects a request presenting only one
+// header, so sending a partial pair would just yield a confusing 401).
+func cfAccessHeaders() (id, secret string) {
+	id = strings.TrimSpace(os.Getenv("CF_ACCESS_CLIENT_ID"))
+	secret = strings.TrimSpace(os.Getenv("CF_ACCESS_CLIENT_SECRET"))
+	if id != "" && secret != "" {
+		return id, secret
+	}
+	cfAccessMu.RLock()
+	defer cfAccessMu.RUnlock()
+	if cfAccessID != "" && cfAccessSecret != "" {
+		return cfAccessID, cfAccessSecret
+	}
+	return "", ""
+}
+
 func (c *APIClient) setHeaders(req *http.Request) {
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
@@ -173,6 +217,10 @@ func (c *APIClient) setHeaders(req *http.Request) {
 	}
 	if c.TaskID != "" {
 		req.Header.Set("X-Task-ID", c.TaskID)
+	}
+	if id, secret := cfAccessHeaders(); id != "" {
+		req.Header.Set("CF-Access-Client-Id", id)
+		req.Header.Set("CF-Access-Client-Secret", secret)
 	}
 
 	platform := c.Platform
