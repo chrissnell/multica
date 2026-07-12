@@ -387,14 +387,37 @@ func promptAppURL(serverURL string) (string, error) {
 
 // probeServer checks whether a Multica backend is reachable at the given URL.
 // Uses cli.NewAPIClient so the request picks up the same headers every other
-// CLI/daemon call sends — most importantly the Cloudflare Access service-token
-// pair, without which a CF-Zero-Trust-protected origin would 302 the probe to
-// the CF Access login and the reachability check would always fail even when
-// the Multica server itself is happy.
+// CLI/daemon call sends — most importantly the Cloudflare Access
+// service-token pair, without which a CF-Zero-Trust-protected origin would
+// 302 the probe to the CF Access login and the reachability check would
+// always fail even when the Multica server itself is happy.
+//
+// Hits /api/config for two reasons:
+//
+//  1. Production self-host deploys front the domain with an ingress that
+//     routes /api/*, /ws/*, /auth/*, /uploads/* to the Go backend and
+//     everything else to the Next.js web pod. /health is served by the
+//     backend but is *not* in the /api prefix, so on a same-domain deploy
+//     it falls through to Next.js and 404s regardless of whether the
+//     backend is healthy.
+//  2. Decoding the response into a struct (rather than passing out=nil)
+//     forces GetJSON to actually parse JSON. Without that, a redirect that
+//     lands on any HTML page returning 200 — e.g. the CF Access login
+//     page when the service-token headers are misconfigured — is
+//     indistinguishable from a healthy Multica server, and the probe
+//     falsely reports "reachable" while the follow-up API calls all fail.
 func probeServer(baseURL string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	client := cli.NewAPIClient(baseURL, "", "")
 	client.HTTPClient = &http.Client{Timeout: 2 * time.Second}
-	return client.GetJSON(ctx, "/health", nil) == nil
+	// The public /api/config endpoint returns a small JSON document with a
+	// stable top-level `allow_signup` boolean; we only care that decoding
+	// succeeds, but decoding into a shape with at least one expected field
+	// makes the intent obvious and catches "our /api/config now returns an
+	// unrelated JSON shape" regressions early.
+	var probe struct {
+		AllowSignup bool `json:"allow_signup"`
+	}
+	return client.GetJSON(ctx, "/api/config", &probe) == nil
 }

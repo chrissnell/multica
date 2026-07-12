@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -72,6 +74,62 @@ func TestPersistSelfHostConfigIfReachable(t *testing.T) {
 		}
 		if got.ServerURL != "https://api.new.example" || got.AppURL != "https://new.example" {
 			t.Fatalf("config not written: %+v", got)
+		}
+	})
+}
+
+// TestProbeServer covers two production incidents rolled into the one
+// helper: (1) `/health` on a same-domain self-host deploy falls through
+// the k8s ingress /api|/ws|/auth|/uploads backend prefix list and hits the
+// Next.js catch-all — probing `/health` therefore false-negatives even
+// when the Multica backend is running; (2) a probe that ignores the
+// response body treats any 200 HTML page (e.g. a Cloudflare Access login
+// page reached via redirect when service-token headers are misconfigured)
+// as "reachable", so setup happily saves a broken config and then fails
+// at the very next API call.
+func TestProbeServer(t *testing.T) {
+	t.Run("json response is reachable", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/config" {
+				t.Errorf("probe should hit /api/config, got %s", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"allow_signup":true}`))
+		}))
+		defer srv.Close()
+		if !probeServer(srv.URL) {
+			t.Fatalf("probeServer: want true for JSON 200 at /api/config")
+		}
+	})
+
+	t.Run("html 200 is not reachable", func(t *testing.T) {
+		// Simulates the CF-Access-login-page-after-redirect false positive:
+		// the server returns 200 with HTML instead of JSON, and previously
+		// `probeServer` would report reachable because it never parsed the
+		// body.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><head><title>login</title></head><body>please sign in</body></html>`))
+		}))
+		defer srv.Close()
+		if probeServer(srv.URL) {
+			t.Fatalf("probeServer: want false when /api/config returns HTML")
+		}
+	})
+
+	t.Run("404 is not reachable", func(t *testing.T) {
+		// Simulates hitting the wrong ingress path — the Next.js pod
+		// answering /api/config with a 404 would previously have looked
+		// identical to a legitimate failure only because GetJSON already
+		// treats >=400 as an error, but keep the case explicit so a
+		// future probe rewrite doesn't quietly regress this.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"not found"}`))
+		}))
+		defer srv.Close()
+		if probeServer(srv.URL) {
+			t.Fatalf("probeServer: want false when /api/config returns 404")
 		}
 	})
 }
