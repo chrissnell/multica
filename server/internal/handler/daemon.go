@@ -249,29 +249,8 @@ func parseWorkspaceRepos(raw []byte) []RepoData {
 	return normalizeWorkspaceRepos(repos)
 }
 
-// lookupWorkspaceProjectRepoURLs returns the URLs of every github_repo
-// project resource attached to projects in the workspace. The repocache
-// merges these with workspace.repos so attaching a github_repo to a
-// project flows into the cache automatically. A query failure here is
-// non-fatal — we log and return nil so the workspace-level repos are
-// still served.
-func (h *Handler) lookupWorkspaceProjectRepoURLs(ctx context.Context, workspaceID pgtype.UUID) []string {
-	urls, err := h.Queries.ListWorkspaceGithubRepoURLs(ctx, workspaceID)
-	if err != nil {
-		slog.Warn("list workspace github_repo resources failed", "workspace_id", uuidToString(workspaceID), "error", err)
-		return nil
-	}
-	return urls
-}
-
-func workspaceReposResponse(workspaceID string, raw []byte, settingsRaw []byte, projectRepoURLs []string) daemonWorkspaceReposResponse {
+func workspaceReposResponse(workspaceID string, raw []byte, settingsRaw []byte) daemonWorkspaceReposResponse {
 	repos := parseWorkspaceRepos(raw)
-	if len(projectRepoURLs) > 0 {
-		for _, url := range projectRepoURLs {
-			repos = append(repos, RepoData{URL: url})
-		}
-		repos = normalizeWorkspaceRepos(repos)
-	}
 	resp := daemonWorkspaceReposResponse{
 		WorkspaceID:  workspaceID,
 		Repos:        repos,
@@ -672,8 +651,8 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		"runtimes": resp,
 	})
 
-	projectRepoURLs := h.lookupWorkspaceProjectRepoURLs(r.Context(), wsUUID)
-	repoResp := workspaceReposResponse(req.WorkspaceID, ws.Repos, ws.Settings, projectRepoURLs)
+	repoResp := workspaceReposResponse(req.WorkspaceID, ws.Repos, ws.Settings)
+	h.addProjectRepos(r.Context(), wsUUID, &repoResp) // fork seam (daemon_fork.go)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"runtimes":      resp,
@@ -778,8 +757,9 @@ func (h *Handler) GetDaemonWorkspaceRepos(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	projectRepoURLs := h.lookupWorkspaceProjectRepoURLs(r.Context(), wsUUID)
-	writeJSON(w, http.StatusOK, workspaceReposResponse(workspaceID, ws.Repos, ws.Settings, projectRepoURLs))
+	repoResp := workspaceReposResponse(workspaceID, ws.Repos, ws.Settings)
+	h.addProjectRepos(r.Context(), wsUUID, &repoResp) // fork seam (daemon_fork.go)
+	writeJSON(w, http.StatusOK, repoResp)
 }
 
 // DaemonDeregister marks runtimes as offline when the daemon shuts down.
@@ -3241,8 +3221,6 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if workspaceID != "" {
-			// Broadcast the persisted record time so live transcript rows show
-			// the same per-action timing as a later catch-up fetch would.
 			h.publishTask(protocol.EventTaskMessage, workspaceID, "system", "", taskID,
 				taskMessageToPayload(created, taskID, uuidToString(task.IssueID)))
 		}
