@@ -9,6 +9,7 @@ enum KeychainError: Error, LocalizedError {
     case unexpectedFormat
     case read(OSStatus)
     case write(OSStatus)
+    case securityCLI(status: Int32, message: String)
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +21,8 @@ enum KeychainError: Error, LocalizedError {
             return "keychain read failed (OSStatus \(s): \(secErrorMessage(s)))"
         case .write(let s):
             return "keychain write failed (OSStatus \(s): \(secErrorMessage(s)))"
+        case .securityCLI(let status, let msg):
+            return "/usr/bin/security add-generic-password exited \(status): \(msg)"
         }
     }
 }
@@ -60,31 +63,52 @@ struct KeychainStore {
         return data
     }
 
-    /// Write the entry, creating it when absent, updating in place when
-    /// present. SecItemUpdate is preferred over delete+add so the ACL of an
-    /// existing entry survives — if we recreated the entry every sync, the
-    /// keychain would prompt the user on every rotation.
+    /// Write the entry via /usr/bin/security. Deliberately NOT
+    /// SecItemUpdate: on macOS, SecItemUpdate replaces the item's ACL
+    /// with just the caller (this app), which then makes every other
+    /// process reading the entry — most notably /usr/bin/security when
+    /// the multica daemon spawns a claude subprocess — trip a keychain
+    /// prompt on every sync. `security add-generic-password -U`
+    /// preserves the existing ACL that the Claude Code CLI's own login
+    /// installed, so subsequent reads by other processes stay silent.
+    /// This is the exact call the Go binary made before the menubar
+    /// rewrite; matching it bit-for-bit avoids reintroducing the exact
+    /// class of user-visible regression that motivated moving off
+    /// SecItemUpdate in the first place.
+    ///
+    /// Password bytes travel on argv, not stdin, so we hit the code path
+    /// in `security` that handles blobs larger than PASS_MAX (Claude's
+    /// credentials blob comfortably exceeds it, and the stdin path
+    /// silently truncates). macOS restricts argv visibility to the
+    /// process owner by default, so this leaks nothing to any other
+    /// user; the value is already in the user's keychain, which the
+    /// same owner can read directly.
     func write(service: String, account: String, data: Data) throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        let update: [String: Any] = [
-            kSecValueData as String: data,
-        ]
-        let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
-        if status == errSecItemNotFound {
-            var add = query
-            add[kSecValueData as String] = data
-            let addStatus = SecItemAdd(add as CFDictionary, nil)
-            guard addStatus == errSecSuccess else {
-                throw KeychainError.write(addStatus)
-            }
-            return
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw KeychainError.unexpectedFormat
         }
-        guard status == errSecSuccess else {
-            throw KeychainError.write(status)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = [
+            "add-generic-password",
+            "-s", service,
+            "-a", account,
+            "-U",
+            "-w", value,
+        ]
+        let errPipe = Pipe()
+        process.standardError = errPipe
+        process.standardOutput = Pipe()
+        do {
+            try process.run()
+        } catch {
+            throw KeychainError.write(errSecInternalError)
+        }
+        process.waitUntilExit()
+        if process.terminationStatus != 0 {
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let msg = String(data: errData, encoding: .utf8) ?? "unknown"
+            throw KeychainError.securityCLI(status: process.terminationStatus, message: msg.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 }
