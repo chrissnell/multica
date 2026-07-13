@@ -32,6 +32,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN" "$APP/Contents/MacOS/MulticaTokenSync"
 cp "$HERE/bundle/Info.plist" "$APP/Contents/Info.plist"
+# AppIcon.icns is checked in — rebuild via bundle/build-icon.sh only
+# when the source SVG changes. Copying the checked-in file avoids the
+# ImageMagick+qlmanage dependency chain on a normal build.
+if [[ -f "$HERE/bundle/AppIcon.icns" ]]; then
+  cp "$HERE/bundle/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+fi
 
 # PkgInfo is legacy but a well-formed .app has one. Contents = APPL????.
 printf 'APPL????' > "$APP/Contents/PkgInfo"

@@ -5,3 +5,12 @@
 build/
 DerivedData/
 *.xcodeproj
+
+# Icon workbench — the intermediate PNGs and generated iconset are big
+# and easy to reproduce with bundle/build-icon.sh. AppIcon.icns is
+# checked in so a normal build doesn't need ImageMagick+qlmanage.
+bundle/icon-src/logo-1024.png
+bundle/icon-src/logo-inset.png
+bundle/icon-src/mask.png
+bundle/icon-src/framed-1024.png
+bundle/icon-src/AppIcon.iconset/
