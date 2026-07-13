@@ -42,11 +42,33 @@ fi
 # PkgInfo is legacy but a well-formed .app has one. Contents = APPL????.
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-echo "==> ad-hoc codesign"
-# Ad-hoc signing (identity "-") is enough for a locally-run app that talks
-# to a private cluster over mTLS. If we ever ship this to other operators
-# we'll swap in a Developer ID cert here.
-codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
+echo "==> codesign"
+# Prefer a Developer ID Application cert when one is installed on the
+# build machine. Signing with a stable identity (as opposed to ad-hoc)
+# gives the app a code identity that persists across rebuilds. That
+# matters because macOS's per-item keychain ACL stores the trusted
+# app's *identity*, not its bundle path — with ad-hoc signing, every
+# rebuild gets a fresh CDHash, so every "Always Allow" the user
+# clicked on the previous build is invalidated on the next build and
+# they get re-prompted. Developer ID signing bakes in a certificate
+# chain that stays constant across rebuilds, so ACL entries survive.
+#
+# You can pin a specific identity via CODESIGN_IDENTITY (SHA-1 or
+# common-name substring); otherwise we auto-select the first
+# "Developer ID Application" line from `security find-identity`. Fall
+# back to ad-hoc if none is present so the build still works on a
+# machine without an Apple developer account.
+IDENTITY="${CODESIGN_IDENTITY:-}"
+if [[ -z "$IDENTITY" ]]; then
+  IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk -F'"' '/Developer ID Application:/ {print $2; exit}')"
+fi
+if [[ -z "$IDENTITY" ]]; then
+  echo "    no Developer ID Application cert found; falling back to ad-hoc"
+  IDENTITY="-"
+fi
+echo "    identity: $IDENTITY"
+codesign --force --deep --sign "$IDENTITY" --identifier "$BUNDLE_ID" "$APP"
 
 echo ""
 echo "Built: $APP"

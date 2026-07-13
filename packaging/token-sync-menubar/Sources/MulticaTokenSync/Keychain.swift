@@ -4,8 +4,14 @@ import Security
 /// Errors surfaced by the keychain store. `.notFound` is expected on first
 /// run when the CLI hasn't ever authenticated on this Mac; callers should
 /// treat it as "keychain empty, pull from broker" rather than as a fatal.
+/// `.interactionRequired` is our silent-deny: the item exists but the
+/// current ACL doesn't trust this process, and we suppressed the password
+/// prompt via kSecUseAuthenticationUIFail. Callers should treat it as
+/// "must reset ACL by rewriting the item" — the write path's delete+add
+/// re-establishes a permissive ACL.
 enum KeychainError: Error, LocalizedError {
     case notFound(OSStatus)
+    case interactionRequired(OSStatus)
     case unexpectedFormat
     case read(OSStatus)
     case write(OSStatus)
@@ -15,6 +21,8 @@ enum KeychainError: Error, LocalizedError {
         switch self {
         case .notFound(let s):
             return "keychain entry not found (OSStatus \(s))"
+        case .interactionRequired(let s):
+            return "keychain ACL denied read without prompt (OSStatus \(s)); next write will reset ACL"
         case .unexpectedFormat:
             return "keychain entry present but not readable as bytes"
         case .read(let s):
@@ -22,7 +30,7 @@ enum KeychainError: Error, LocalizedError {
         case .write(let s):
             return "keychain write failed (OSStatus \(s): \(secErrorMessage(s)))"
         case .securityCLI(let status, let msg):
-            return "/usr/bin/security add-generic-password exited \(status): \(msg)"
+            return "/usr/bin/security exited \(status): \(msg)"
         }
     }
 }
@@ -38,9 +46,23 @@ enum KeychainError: Error, LocalizedError {
 /// entry without prompting. If a prompt does appear on first run, choosing
 /// "Always Allow" persists the ACL for future syncs.
 struct KeychainStore {
-    /// Read the generic-password entry as raw bytes. Throws `.notFound` if
-    /// absent; other OSStatuses become `.read` so callers can distinguish
-    /// "empty" from "broken".
+    /// Read the generic-password entry as raw bytes. Throws:
+    ///  - `.notFound` if the item is absent (first run, or CLI never logged in).
+    ///  - `.interactionRequired` if the ACL denies this process; the
+    ///    `kSecUseAuthenticationUI: kSecUseAuthenticationUIFail` hint keeps
+    ///    macOS from popping the "wants to access" password dialog on the
+    ///    user's face, so the reconciler can decide programmatically what
+    ///    to do (rewrite via delete+add to reset ACL, in our case).
+    ///  - `.read` for anything else (system state we didn't anticipate).
+    ///
+    /// The prompt suppression is the whole point of `kSecUseAuthenticationUIFail`.
+    /// Without it, every tick where CC's most recent write happened to leave
+    /// us out of the trusted-app list (which is every tick, because CC
+    /// created the item and macOS's `security add-generic-password -U -A`
+    /// deliberately ignores `-A` on the update path — see the write() doc)
+    /// interrupts the user with a login-keychain unlock dialog. On silent
+    /// deny, our write path takes over and re-creates the item with a
+    /// truly permissive ACL, which is the only way to reset it.
     func read(service: String, account: String) throws -> Data {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -48,11 +70,19 @@ struct KeychainStore {
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound {
             throw KeychainError.notFound(status)
+        }
+        // errSecInteractionNotAllowed (-25308) is what we get with
+        // kSecUseAuthenticationUIFail when the ACL would have prompted.
+        // errSecInteractionRequired (-25315) shows up on some macOS
+        // versions for the same condition; treat both as the same case.
+        if status == errSecInteractionNotAllowed || status == -25315 {
+            throw KeychainError.interactionRequired(status)
         }
         guard status == errSecSuccess else {
             throw KeychainError.read(status)
@@ -63,23 +93,36 @@ struct KeychainStore {
         return data
     }
 
-    /// Write the entry via /usr/bin/security. Deliberately NOT
-    /// SecItemUpdate: on macOS, SecItemUpdate replaces the item's ACL
-    /// with just the caller (this app), which then makes every other
-    /// process reading the entry — most notably /usr/bin/security when
-    /// the multica daemon spawns a claude subprocess — trip a keychain
-    /// prompt on every sync. `security add-generic-password -U`
-    /// preserves the existing ACL that the Claude Code CLI's own login
-    /// installed, so subsequent reads by other processes stay silent.
-    /// This is the exact call the Go binary made before the menubar
-    /// rewrite; matching it bit-for-bit avoids reintroducing the exact
-    /// class of user-visible regression that motivated moving off
-    /// SecItemUpdate in the first place.
+    /// Write the entry via /usr/bin/security as delete-then-add.
     ///
-    /// Password bytes travel on argv, not stdin, so we hit the code path
-    /// in `security` that handles blobs larger than PASS_MAX (Claude's
-    /// credentials blob comfortably exceeds it, and the stdin path
-    /// silently truncates). macOS restricts argv visibility to the
+    /// The obvious-sounding path — `security add-generic-password -U -A`
+    /// — looks like it updates the item in place AND resets the ACL to
+    /// permissive. It does the first but not the second. Reading Apple's
+    /// security_tool source (keychain_add.c) shows the update path calls
+    /// `SecKeychainItemModifyAttributesAndData`, which ignores the
+    /// access parameter entirely. `-A` is honored only on the create
+    /// path. Which means every -U -A we've done in the past just
+    /// overwrote data while leaving whatever ACL the original creator
+    /// installed — for us, that's the CLI's own initial `claude login`,
+    /// which scoped the ACL to just node/electron. Every one of our
+    /// reads then trips the "wants to access" prompt on the user, and
+    /// clicking Always Allow only sticks until CDHash changes on the
+    /// next rebuild.
+    ///
+    /// Delete + add breaks this: the delete drops the CLI-scoped ACL,
+    /// and the add re-creates the item with `-A`, which on the create
+    /// path really does write a permissive access (nil trusted-app
+    /// list). Every subsequent reader — us on the next tick, the CLI
+    /// on its next refresh, the multica daemon spawning agents — reads
+    /// without prompt. The tiny window where the item doesn't exist is
+    /// on the order of tens of milliseconds; a concurrent CLI read
+    /// there gets errSecItemNotFound and its normal retry logic kicks
+    /// in on the next call.
+    ///
+    /// Password bytes travel on argv, not stdin, so we hit the code
+    /// path in `security` that handles blobs larger than PASS_MAX
+    /// (Claude's credentials blob comfortably exceeds it, and the stdin
+    /// path silently truncates). macOS restricts argv visibility to the
     /// process owner by default, so this leaks nothing to any other
     /// user; the value is already in the user's keychain, which the
     /// same owner can read directly.
@@ -87,40 +130,53 @@ struct KeychainStore {
         guard let value = String(data: data, encoding: .utf8) else {
             throw KeychainError.unexpectedFormat
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        // -A marks the item accessible from any app without warning.
-        // Without it, the ACL is scoped to just the writing process
-        // (/usr/bin/security), and every OTHER process that later reads
-        // via `security find-generic-password` — Claude Code CLI at
-        // startup, multica-daemon-spawned agents, etc. — trips a
-        // keychain prompt on every rotation. The single-user Mac case
-        // treats "any app the current user runs" as trusted anyway
-        // (they can read the login keychain directly), so -A doesn't
-        // widen the effective threat model; it just stops the loop of
-        // Always-Allow clicks that never stick.
-        process.arguments = [
+
+        // Delete first, best-effort. errSecItemNotFound (exit 44 from
+        // the CLI) is expected on the very first write of a fresh Mac
+        // where the CLI has never logged in; anything else we treat as
+        // a soft warning and continue to the add.
+        _ = runSecurity(args: [
+            "delete-generic-password",
+            "-s", service,
+            "-a", account,
+        ])
+
+        // Fresh create with -A. This is the ONLY branch of security(1)
+        // that actually installs a permissive ACL, so it has to be a
+        // create (add without -U), never an update.
+        let result = runSecurity(args: [
             "add-generic-password",
             "-s", service,
             "-a", account,
-            "-U",
             "-A",
             "-w", value,
-        ]
+        ])
+        if result.status != 0 {
+            throw KeychainError.securityCLI(status: result.status, message: result.stderr)
+        }
+    }
+
+    /// runSecurity is a small helper for the delete+add sequence. It
+    /// returns exit status and captured stderr rather than throwing so
+    /// the caller can make the delete step best-effort while insisting
+    /// the add succeeds.
+    private func runSecurity(args: [String]) -> (status: Int32, stderr: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = args
         let errPipe = Pipe()
         process.standardError = errPipe
         process.standardOutput = Pipe()
         do {
             try process.run()
         } catch {
-            throw KeychainError.write(errSecInternalError)
+            return (Int32(errSecInternalError), "spawn failed: \(error)")
         }
         process.waitUntilExit()
-        if process.terminationStatus != 0 {
-            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-            let msg = String(data: errData, encoding: .utf8) ?? "unknown"
-            throw KeychainError.securityCLI(status: process.terminationStatus, message: msg.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        let msg = (String(data: errData, encoding: .utf8) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (process.terminationStatus, msg)
     }
 }
 

@@ -27,13 +27,59 @@ struct SyncEngine {
 
     func syncOnce(_ cfg: SyncConfig) async throws -> SyncOutcome {
         let broker = try await kube.readBrokerState(namespace: cfg.namespace, name: cfg.secretName)
-        let existing: Data? = try? keychain.read(service: cfg.keychainService, account: cfg.keychainAccount)
+
+        // Distinguish "ACL blocks us" from "item missing" from "read
+        // broke". The interactionRequired branch is expected on any
+        // Mac where the CLI created the keychain item before we did
+        // (which is most of them); the write path's delete+add heals
+        // it on the next pull. Treating it identically to notFound is
+        // fine — the reconciler already handles nil existing by
+        // falling through to pull.
+        let existing: Data?
+        let readError: Error?
+        do {
+            existing = try keychain.read(service: cfg.keychainService, account: cfg.keychainAccount)
+            readError = nil
+        } catch KeychainError.notFound {
+            existing = nil
+            readError = nil
+        } catch let e as KeychainError where isInteractionRequired(e) {
+            // Log the recovery-mode transition so diagnostics show
+            // what's happening. The pull below will heal it.
+            FileHandle.standardError.write(Data(
+                "keychain read denied by ACL; pulling from broker to reset ACL via delete+add\n".utf8))
+            existing = nil
+            readError = e
+        } catch {
+            existing = nil
+            readError = error
+        }
+
         let parsed = parseKeychain(existing: existing)
 
         if shouldPush(kc: parsed, broker: broker) {
             return try await pushToBroker(cfg: cfg, kc: parsed, broker: broker)
         }
-        return try pullToKeychain(cfg: cfg, broker: broker, existing: existing)
+        var outcome = try pullToKeychain(cfg: cfg, broker: broker, existing: existing)
+        // Surface the read error in the outcome so operators can see
+        // the ACL-recovery path fired, without failing the sync (the
+        // pull already succeeded and will unblock the next tick).
+        if outcome.errorMessage == nil, let readError {
+            outcome = SyncOutcome(
+                at: outcome.at,
+                direction: outcome.direction,
+                wrote: outcome.wrote,
+                brokerExpiresAt: outcome.brokerExpiresAt,
+                keychainExpiresAt: outcome.keychainExpiresAt,
+                errorMessage: "recovered from keychain ACL denial: \(readError.localizedDescription)"
+            )
+        }
+        return outcome
+    }
+
+    private func isInteractionRequired(_ err: KeychainError) -> Bool {
+        if case .interactionRequired = err { return true }
+        return false
     }
 
     // MARK: - decision + write paths
