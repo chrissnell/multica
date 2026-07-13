@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.multica.token-sync.app</string>
+  <!-- Launch the .app (via `open`) rather than the raw executable so
+       LSUIElement etc. take effect and the process registers with the
+       WindowServer, which is what MenuBarExtra needs. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/open</string>
+    <string>-a</string>
+    <string>/Applications/Multica Token Sync.app</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- KeepAlive so if the app crashes or is quit, launchd relaunches it
+       within a bounded interval. ThrottleInterval prevents a crash loop
+       from burning CPU. -->
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>StandardOutPath</key>
+  <string>__USER_HOME__/Library/Logs/multica-token-sync-launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>__USER_HOME__/Library/Logs/multica-token-sync-launchd.log</string>
+</dict>
+</plist>

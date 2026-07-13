@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.multica.token-sync</string>
+  <key>CFBundleName</key>
+  <string>MulticaTokenSync</string>
+  <key>CFBundleDisplayName</key>
+  <string>Multica Token Sync</string>
+  <key>CFBundleExecutable</key>
+  <string>MulticaTokenSync</string>
+  <key>CFBundleVersion</key>
+  <string>2.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>2.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>Multica</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Required to reach the in-cluster Claude OAuth broker Secret over the LAN.</string>
+</dict>
+</plist>
