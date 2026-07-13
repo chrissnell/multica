@@ -1,0 +1,7 @@
+# Swift Package Manager build products and the assembled .app bundle.
+# Package.resolved IS checked in intentionally — pinning transitive deps
+# (swift-nio, async-http-client, Yams) makes builds reproducible.
+.build/
+build/
+DerivedData/
+*.xcodeproj
