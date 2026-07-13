@@ -89,11 +89,22 @@ struct KeychainStore {
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        // -A marks the item accessible from any app without warning.
+        // Without it, the ACL is scoped to just the writing process
+        // (/usr/bin/security), and every OTHER process that later reads
+        // via `security find-generic-password` — Claude Code CLI at
+        // startup, multica-daemon-spawned agents, etc. — trips a
+        // keychain prompt on every rotation. The single-user Mac case
+        // treats "any app the current user runs" as trusted anyway
+        // (they can read the login keychain directly), so -A doesn't
+        // widen the effective threat model; it just stops the loop of
+        // Always-Allow clicks that never stick.
         process.arguments = [
             "add-generic-password",
             "-s", service,
             "-a", account,
             "-U",
+            "-A",
             "-w", value,
         ]
         let errPipe = Pipe()
