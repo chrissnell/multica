@@ -62,39 +62,44 @@ struct SyncEngine {
     }
 
     /// pullToKeychain is the steady-state path when the broker is healthy.
-    /// Fingerprint-compare avoids a spurious write when the two sides already
-    /// match (which they will after every non-rotation tick).
+    /// The noop test is deliberately field-level (OAuth token triple), NOT
+    /// byte-level. Byte comparison sounds tighter but it repeatedly bites:
+    /// the Claude Code CLI's own writes emit JSON with a different key
+    /// order than Swift's JSONEncoder, so every steady-state tick would
+    /// decide "bytes differ, rewrite," which then resets the keychain
+    /// item's ACL and forces the user to re-approve every process that
+    /// reads via `/usr/bin/security` on a five-minute cadence. Comparing
+    /// (accessToken, refreshToken, expiresAt) treats the payload's
+    /// container shape as immaterial — only a real rotation should cause
+    /// us to write.
     private func pullToKeychain(cfg: SyncConfig, broker: BrokerState, existing: Data?) throws -> SyncOutcome {
-        let payload = KeychainPayload(claudeAiOauth: .init(
-            accessToken: broker.accessToken,
-            refreshToken: broker.refreshToken,
-            expiresAt: Int64(broker.expiresAt.timeIntervalSince1970 * 1000),
-            scopes: defaultScopes,
-            subscriptionType: "max"
-        ))
-        // Match Go's encoding/json output: no key sorting, no pretty print.
-        // JSONEncoder in .sortedKeys mode would break bit-equality with the
-        // Go binary's writes; we intentionally leave the encoder at defaults.
-        let encoder = JSONEncoder()
-        let newBytes = try encoder.encode(payload)
+        let brokerExpiresMs = Int64(broker.expiresAt.timeIntervalSince1970 * 1000)
 
-        // Existing keychain payload should match by fingerprint even across
-        // Go/Swift writers because both sides encode the same struct with
-        // the same field order. A mismatch either means the broker's tokens
-        // moved (write) or the Claude Code CLI wrote a slightly different
-        // shape (still write — bring it into line with what the broker
-        // implies, which is what the CLI will use anyway).
         if let existing = existing,
-           sha256Hex(existing) == sha256Hex(newBytes) {
+           let e = try? JSONDecoder().decode(KeychainPayload.self, from: existing).claudeAiOauth,
+           e.accessToken == broker.accessToken,
+           e.refreshToken == broker.refreshToken,
+           e.expiresAt == brokerExpiresMs {
             return SyncOutcome(
                 at: Date(),
                 direction: .noop,
                 wrote: false,
                 brokerExpiresAt: broker.expiresAt,
-                keychainExpiresAt: keychainExpiresFromBytes(existing),
+                keychainExpiresAt: Date(timeIntervalSince1970: TimeInterval(e.expiresAt) / 1000),
                 errorMessage: nil
             )
         }
+
+        // Real rotation. Rebuild the payload and write. Match Go's
+        // encoding/json output: no key sorting, no pretty print.
+        let payload = KeychainPayload(claudeAiOauth: .init(
+            accessToken: broker.accessToken,
+            refreshToken: broker.refreshToken,
+            expiresAt: brokerExpiresMs,
+            scopes: defaultScopes,
+            subscriptionType: "max"
+        ))
+        let newBytes = try JSONEncoder().encode(payload)
         if !cfg.dryRun {
             try keychain.write(service: cfg.keychainService, account: cfg.keychainAccount, data: newBytes)
         }
