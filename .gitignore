@@ -68,6 +68,7 @@ server/server
 data/
 .kilo
 .idea
+<<<<<<< HEAD
 
 # local scratch — temp builds, design notes, throwaway binaries
 scratch/
@@ -76,3 +77,6 @@ scratch/
 **/.terraform/
 *.tfstate
 *.tfstate.backup
+=======
+.gstack/
+>>>>>>> upstream/main
