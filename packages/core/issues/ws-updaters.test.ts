@@ -235,6 +235,7 @@ describe("project progress invalidation", () => {
         priority: "none",
         lead_type: null,
         lead_id: null,
+        default_agent_id: null,
         issue_count: 1,
         done_count: 0,
         resource_count: 0,
