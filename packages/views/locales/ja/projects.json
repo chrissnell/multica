@@ -24,6 +24,7 @@
     "status": "ステータス",
     "progress": "進捗",
     "lead": "リード",
+    "default_agent": "デフォルトエージェント",
     "created": "作成日",
     "issues": "Issue 数"
   },
@@ -46,6 +47,11 @@
     "assign_placeholder": "リードを割り当て...",
     "members_group": "メンバー",
     "agents_group": "エージェント",
+    "no_results": "結果なし"
+  },
+  "default_agent": {
+    "none": "デフォルトエージェントなし",
+    "assign_placeholder": "デフォルトエージェントを設定...",
     "no_results": "結果なし"
   },
   "relative_date": {

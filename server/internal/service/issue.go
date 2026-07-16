@@ -186,11 +186,23 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 		}
 	}
 	if projectID.Valid {
-		if _, err := qtx.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{
+		project, err := qtx.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{
 			ID:          projectID,
 			WorkspaceID: p.WorkspaceID,
-		}); err != nil {
+		})
+		if err != nil {
 			return IssueCreateResult{}, ErrProjectNotFound
+		}
+		// Back-fill the assignee from the project's configured default agent
+		// when the caller left the issue unassigned. Mirrors the parent →
+		// project back-fill above: an explicit assignee always wins. The
+		// default is always an agent, so the on-assign enqueue below decides
+		// via its existing readiness gate whether a run actually fires (an
+		// offline / archived default leaves the issue assigned but idle,
+		// exactly as a manual assignment to that agent would).
+		if project.DefaultAgentID.Valid && !p.AssigneeType.Valid && !p.AssigneeID.Valid {
+			p.AssigneeType = pgtype.Text{String: "agent", Valid: true}
+			p.AssigneeID = project.DefaultAgentID
 		}
 	}
 

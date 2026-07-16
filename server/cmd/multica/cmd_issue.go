@@ -2456,6 +2456,11 @@ type assigneeKinds struct {
 var (
 	issueAssigneeKinds = assigneeKinds{member: true, agent: true, squad: true}
 	memberOrAgentKinds = assigneeKinds{member: true, agent: true}
+	// agentOnlyKinds resolves strictly to an agent. Used by the project
+	// default-agent flag: a project's default assignee is always an agent
+	// (the backend rejects member/squad for default_agent_id), so resolving
+	// to anything else should be a clean CLI-side error, not a server 400.
+	agentOnlyKinds = assigneeKinds{agent: true}
 )
 
 var assigneeResolveRetrySleep = func(ctx context.Context, d time.Duration) bool {

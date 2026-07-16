@@ -25,6 +25,7 @@
     "status": "Status",
     "progress": "Progress",
     "lead": "Lead",
+    "default_agent": "Default agent",
     "created": "Created",
     "issues": "Issues"
   },
@@ -47,6 +48,11 @@
     "assign_placeholder": "Assign lead...",
     "members_group": "Members",
     "agents_group": "Agents",
+    "no_results": "No results"
+  },
+  "default_agent": {
+    "none": "No default agent",
+    "assign_placeholder": "Set default agent...",
     "no_results": "No results"
   },
   "relative_date": {

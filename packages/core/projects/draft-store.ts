@@ -11,6 +11,7 @@ interface ProjectDraft {
   priority: ProjectPriority;
   leadType?: "member" | "agent";
   leadId?: string;
+  defaultAgentId?: string;
   icon?: string;
 }
 
@@ -21,6 +22,7 @@ const EMPTY_DRAFT: ProjectDraft = {
   priority: "none",
   leadType: undefined,
   leadId: undefined,
+  defaultAgentId: undefined,
   icon: undefined,
 };
 

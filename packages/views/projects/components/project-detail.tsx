@@ -198,6 +198,12 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const filteredMembers = members.filter((m) => m.name.toLowerCase().includes(leadQuery) || matchesPinyin(m.name, leadQuery));
   const filteredAgents = agents.filter((a) => !a.archived_at && (a.name.toLowerCase().includes(leadQuery) || matchesPinyin(a.name, leadQuery)));
 
+  // Default-agent popover (agent-only: a project default assignee is always an agent)
+  const [defaultAgentOpen, setDefaultAgentOpen] = useState(false);
+  const [defaultAgentFilter, setDefaultAgentFilter] = useState("");
+  const defaultAgentQuery = defaultAgentFilter.toLowerCase();
+  const filteredDefaultAgents = agents.filter((a) => !a.archived_at && (a.name.toLowerCase().includes(defaultAgentQuery) || matchesPinyin(a.name, defaultAgentQuery)));
+
   const handleUpdateField = useCallback(
     (data: Parameters<typeof updateProject.mutate>[0] extends { id: string } & infer R ? R : never) => {
       if (!project) return;
@@ -393,6 +399,59 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                   )}
                   {filteredMembers.length === 0 && filteredAgents.length === 0 && leadFilter && (
                     <div className="px-2 py-3 text-center text-sm text-muted-foreground">{t(($) => $.lead.no_results)}</div>
+                  )}
+                </div>
+              </PopoverContent>
+            </Popover>
+          </PropRow>
+          <PropRow label={t(($) => $.table.default_agent)}>
+            <Popover open={defaultAgentOpen} onOpenChange={(v) => { setDefaultAgentOpen(v); if (!v) setDefaultAgentFilter(""); }}>
+              <PopoverTrigger
+                render={
+                  <button type="button" className="inline-flex items-center gap-1.5 text-xs hover:text-foreground transition-colors">
+                    {project.default_agent_id ? (
+                      <>
+                        <ActorAvatar actorType="agent" actorId={project.default_agent_id} size="sm" enableHoverCard showStatusDot />
+                        <span className="cursor-pointer">{getActorName("agent", project.default_agent_id)}</span>
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">{t(($) => $.default_agent.none)}</span>
+                    )}
+                  </button>
+                }
+              />
+              <PopoverContent align="start" className="w-52 p-0">
+                <div className="px-2 py-1.5 border-b">
+                  <input
+                    type="text"
+                    value={defaultAgentFilter}
+                    onChange={(e) => setDefaultAgentFilter(e.target.value)}
+                    placeholder={t(($) => $.default_agent.assign_placeholder)}
+                    className="w-full bg-transparent text-sm placeholder:text-muted-foreground outline-none"
+                  />
+                </div>
+                <div className="p-1 max-h-60 overflow-y-auto">
+                  <button
+                    type="button"
+                    onClick={() => { handleUpdateField({ default_agent_id: null }); setDefaultAgentOpen(false); }}
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors"
+                  >
+                    <UserMinus className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span className="text-muted-foreground">{t(($) => $.default_agent.none)}</span>
+                  </button>
+                  {filteredDefaultAgents.map((a) => (
+                    <button
+                      type="button"
+                      key={a.id}
+                      onClick={() => { handleUpdateField({ default_agent_id: a.id }); setDefaultAgentOpen(false); }}
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors"
+                    >
+                      <ActorAvatar actorType="agent" actorId={a.id} size="sm" showStatusDot />
+                      <span>{a.name}</span>
+                    </button>
+                  ))}
+                  {filteredDefaultAgents.length === 0 && (
+                    <div className="px-2 py-3 text-center text-sm text-muted-foreground">{t(($) => $.default_agent.no_results)}</div>
                   )}
                 </div>
               </PopoverContent>

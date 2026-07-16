@@ -12,6 +12,9 @@ export interface Project {
   priority: ProjectPriority;
   lead_type: "member" | "agent" | null;
   lead_id: string | null;
+  // Agent auto-assigned to new issues created in this project without an
+  // explicit assignee. Null when no default is configured.
+  default_agent_id: string | null;
   created_at: string;
   updated_at: string;
   issue_count: number;
@@ -27,6 +30,8 @@ export interface CreateProjectRequest {
   priority?: ProjectPriority;
   lead_type?: "member" | "agent";
   lead_id?: string;
+  // Agent auto-assigned to new unassigned issues in this project.
+  default_agent_id?: string;
   // Resources to attach in the same transaction as the project. Server returns
   // 4xx (and rolls back) if any one is invalid or duplicate.
   resources?: CreateProjectResourceRequest[];
@@ -40,6 +45,9 @@ export interface UpdateProjectRequest {
   priority?: ProjectPriority;
   lead_type?: "member" | "agent" | null;
   lead_id?: string | null;
+  // Present-and-set assigns a default agent; present-and-null clears it;
+  // omitted leaves it unchanged.
+  default_agent_id?: string | null;
 }
 
 export interface ListProjectsResponse {
