@@ -135,6 +135,7 @@ func init() {
 	projectCreateCmd.Flags().String("status", "", "Project status")
 	projectCreateCmd.Flags().String("icon", "", "Project icon (emoji)")
 	projectCreateCmd.Flags().String("lead", "", "Lead name (member or agent)")
+	projectCreateCmd.Flags().String("default-agent", "", "Agent (name or ID) auto-assigned to new unassigned issues in this project")
 	projectCreateCmd.Flags().StringArray("repo", nil, "Attach a github_repo resource by URL (may be repeated)")
 	projectCreateCmd.Flags().String("output", "json", "Output format: table or json")
 
@@ -178,6 +179,8 @@ func init() {
 	projectUpdateCmd.Flags().String("status", "", "New status")
 	projectUpdateCmd.Flags().String("icon", "", "New icon (emoji)")
 	projectUpdateCmd.Flags().String("lead", "", "New lead name (member or agent)")
+	projectUpdateCmd.Flags().String("default-agent", "", "Agent (name or ID) auto-assigned to new unassigned issues; pass with --clear-default-agent to unset")
+	projectUpdateCmd.Flags().Bool("clear-default-agent", false, "Clear the project's default agent")
 	projectUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// project delete
@@ -332,6 +335,13 @@ func runProjectCreate(cmd *cobra.Command, _ []string) error {
 		body["lead_type"] = aType
 		body["lead_id"] = aID
 	}
+	if v, _ := cmd.Flags().GetString("default-agent"); v != "" {
+		_, aID, resolveErr := resolveAssignee(ctx, client, v, agentOnlyKinds)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve default agent: %w", resolveErr)
+		}
+		body["default_agent_id"] = aID
+	}
 
 	// Bundle resources into the create payload so the server attaches them in
 	// the same transaction; this avoids leaving a half-attached project on
@@ -417,9 +427,23 @@ func runProjectUpdate(cmd *cobra.Command, args []string) error {
 		body["lead_type"] = aType
 		body["lead_id"] = aID
 	}
+	clearDefaultAgent, _ := cmd.Flags().GetBool("clear-default-agent")
+	if clearDefaultAgent {
+		body["default_agent_id"] = nil
+	} else if cmd.Flags().Changed("default-agent") {
+		v, _ := cmd.Flags().GetString("default-agent")
+		if v == "" {
+			return fmt.Errorf("--default-agent requires an agent name or ID; use --clear-default-agent to unset")
+		}
+		_, aID, resolveErr := resolveAssignee(ctx, client, v, agentOnlyKinds)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve default agent: %w", resolveErr)
+		}
+		body["default_agent_id"] = aID
+	}
 
 	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use flags like --title, --status, --description, --icon, --lead")
+		return fmt.Errorf("no fields to update; use flags like --title, --status, --description, --icon, --lead, --default-agent")
 	}
 
 	var result map[string]any

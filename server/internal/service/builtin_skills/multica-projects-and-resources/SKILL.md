@@ -26,6 +26,8 @@ A project groups work and carries durable resources. A resource is not just disp
 
 A project's `description` is also durable context: when an issue (or a quick-create task) is bound to a project, the project description is injected into the agent's brief under `## Project Context` and written to `.multica/project/resources.json` as `project_description`. Use it for project-wide rules/context that should apply to every task in the project.
 
+A project may also carry a `default_agent_id`: the agent auto-assigned to any issue created in the project without an explicit assignee. Back-filled in the issue-create pipeline (`server/internal/service/issue.go`), so the normal on-assign enqueue then fires a run — the same path as a manual agent assignment (an offline/archived default leaves the issue assigned but idle). An explicit assignee on the create request always wins. Use it to route a project whose work needs a specific runtime (e.g. a macOS agent) to that agent without picking an assignee each time.
+
 Common resource types:
 
 - `github_repo` — durable GitHub repo context, with `resource_ref.url`, optional checkout `ref`, and optional prompt-only `default_branch_hint`;
@@ -37,7 +39,10 @@ Common resource types:
 multica project list --output json
 multica project get <project-id> --output json
 multica project create --title "<title>" --repo <github-url> --output json
+multica project create --title "<title>" --default-agent "<agent-name-or-id>" --output json
 multica project update <project-id> --title "<title>" --output json
+multica project update <project-id> --default-agent "<agent-name-or-id>" --output json
+multica project update <project-id> --clear-default-agent --output json
 multica project status <project-id> in_progress --output json
 multica project resource list <project-id> --output json
 multica project resource add <project-id> --type github_repo --url <github-url> --output json
@@ -70,5 +75,7 @@ is task-local checkout state.
 ## Side effects
 
 Project create/update/delete/status and project resource add/update/remove mutate durable workspace state and affect future tasks. Ask before changing `local_directory` unless the user explicitly requested that exact local path.
+
+Setting a project `default_agent_id` is durable and has a downstream side effect: every subsequent unassigned issue created in that project is auto-assigned to that agent and (if the agent is ready) immediately triggers a run. Treat it like assigning work, not just tagging metadata.
 
 More source-backed details: `references/projects-and-resources-source-map.md`.

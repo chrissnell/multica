@@ -28,10 +28,13 @@ type ProjectResponse struct {
 	Priority    string  `json:"priority"`
 	LeadType    *string `json:"lead_type"`
 	LeadID      *string `json:"lead_id"`
-	CreatedAt   string  `json:"created_at"`
-	UpdatedAt   string  `json:"updated_at"`
-	IssueCount  int64   `json:"issue_count"`
-	DoneCount   int64   `json:"done_count"`
+	// DefaultAgentID, when set, is the agent auto-assigned to new issues
+	// created in this project that arrive without an explicit assignee.
+	DefaultAgentID *string `json:"default_agent_id"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
+	IssueCount     int64   `json:"issue_count"`
+	DoneCount      int64   `json:"done_count"`
 	// ResourceCount is a breadcrumb pointing at the sub-collection at
 	// /api/projects/{id}/resources. Resources themselves stay out of this
 	// payload to keep parent metadata and child collections separate; clients
@@ -41,17 +44,18 @@ type ProjectResponse struct {
 
 func projectToResponse(p db.Project) ProjectResponse {
 	return ProjectResponse{
-		ID:          uuidToString(p.ID),
-		WorkspaceID: uuidToString(p.WorkspaceID),
-		Title:       p.Title,
-		Description: textToPtr(p.Description),
-		Icon:        textToPtr(p.Icon),
-		Status:      p.Status,
-		Priority:    p.Priority,
-		LeadType:    textToPtr(p.LeadType),
-		LeadID:      uuidToPtr(p.LeadID),
-		CreatedAt:   timestampToString(p.CreatedAt),
-		UpdatedAt:   timestampToString(p.UpdatedAt),
+		ID:             uuidToString(p.ID),
+		WorkspaceID:    uuidToString(p.WorkspaceID),
+		Title:          p.Title,
+		Description:    textToPtr(p.Description),
+		Icon:           textToPtr(p.Icon),
+		Status:         p.Status,
+		Priority:       p.Priority,
+		LeadType:       textToPtr(p.LeadType),
+		LeadID:         uuidToPtr(p.LeadID),
+		DefaultAgentID: uuidToPtr(p.DefaultAgentID),
+		CreatedAt:      timestampToString(p.CreatedAt),
+		UpdatedAt:      timestampToString(p.UpdatedAt),
 	}
 }
 
@@ -72,14 +76,17 @@ func (h *Handler) loadProjectResourceCount(ctx context.Context, projectID pgtype
 }
 
 type CreateProjectRequest struct {
-	Title       string                                `json:"title"`
-	Description *string                               `json:"description"`
-	Icon        *string                               `json:"icon"`
-	Status      string                                `json:"status"`
-	Priority    string                                `json:"priority"`
-	LeadType    *string                               `json:"lead_type"`
-	LeadID      *string                               `json:"lead_id"`
-	Resources   []CreateProjectResourceRequestPayload `json:"resources,omitempty"`
+	Title       string  `json:"title"`
+	Description *string `json:"description"`
+	Icon        *string `json:"icon"`
+	Status      string  `json:"status"`
+	Priority    string  `json:"priority"`
+	LeadType    *string `json:"lead_type"`
+	LeadID      *string `json:"lead_id"`
+	// DefaultAgentID auto-assigns new unassigned issues in this project to
+	// the given agent. Must be an agent in the same workspace.
+	DefaultAgentID *string                               `json:"default_agent_id"`
+	Resources      []CreateProjectResourceRequestPayload `json:"resources,omitempty"`
 }
 
 // CreateProjectResourceRequestPayload mirrors CreateProjectResourceRequest but
@@ -100,6 +107,9 @@ type UpdateProjectRequest struct {
 	Priority    *string `json:"priority"`
 	LeadType    *string `json:"lead_type"`
 	LeadID      *string `json:"lead_id"`
+	// DefaultAgentID: present-and-set assigns a new default agent;
+	// present-and-null clears it; omitted leaves it unchanged.
+	DefaultAgentID *string `json:"default_agent_id"`
 }
 
 func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
@@ -219,6 +229,30 @@ func (h *Handler) writeProjectWriteError(w http.ResponseWriter, r *http.Request,
 	writeError(w, http.StatusInternalServerError, "failed to "+action+" project")
 }
 
+// resolveProjectDefaultAgent parses an optional default_agent_id and verifies
+// the referenced agent exists in the workspace. It mirrors
+// validateAutopilotAssignee's agent case: a project default is always an agent,
+// so squad/member types are not accepted here. Writes a 400 and returns
+// ok=false on any failure. A nil idStr yields a zero (invalid) UUID with
+// ok=true — the caller treats that as "no default agent".
+func (h *Handler) resolveProjectDefaultAgent(w http.ResponseWriter, r *http.Request, idStr *string, workspaceID pgtype.UUID) (pgtype.UUID, bool) {
+	if idStr == nil {
+		return pgtype.UUID{}, true
+	}
+	agentID, ok := parseUUIDOrBadRequest(w, *idStr, "default_agent_id")
+	if !ok {
+		return pgtype.UUID{}, false
+	}
+	if _, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+		ID:          agentID,
+		WorkspaceID: workspaceID,
+	}); err != nil {
+		writeError(w, http.StatusBadRequest, "default_agent_id must be a valid agent in this workspace")
+		return pgtype.UUID{}, false
+	}
+	return agentID, true
+}
+
 func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	var req CreateProjectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -264,6 +298,10 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	defaultAgentID, ok := h.resolveProjectDefaultAgent(w, r, req.DefaultAgentID, wsUUID)
+	if !ok {
+		return
+	}
 
 	// Pre-validate every resource payload before opening a transaction so an
 	// invalid ref produces a clean 400 with no DB work. For local_directory we
@@ -302,14 +340,15 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	createParams := db.CreateProjectParams{
-		WorkspaceID: wsUUID,
-		Title:       req.Title,
-		Description: ptrToText(req.Description),
-		Icon:        ptrToText(req.Icon),
-		Status:      status,
-		LeadType:    leadType,
-		LeadID:      leadID,
-		Priority:    priority,
+		WorkspaceID:    wsUUID,
+		Title:          req.Title,
+		Description:    ptrToText(req.Description),
+		Icon:           ptrToText(req.Icon),
+		Status:         status,
+		LeadType:       leadType,
+		LeadID:         leadID,
+		Priority:       priority,
+		DefaultAgentID: defaultAgentID,
 	}
 
 	// Without resources, keep the simple non-tx path.
@@ -436,11 +475,12 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal(bodyBytes, &rawFields)
 
 	params := db.UpdateProjectParams{
-		ID:          prevProject.ID,
-		Description: prevProject.Description,
-		Icon:        prevProject.Icon,
-		LeadType:    prevProject.LeadType,
-		LeadID:      prevProject.LeadID,
+		ID:             prevProject.ID,
+		Description:    prevProject.Description,
+		Icon:           prevProject.Icon,
+		LeadType:       prevProject.LeadType,
+		LeadID:         prevProject.LeadID,
+		DefaultAgentID: prevProject.DefaultAgentID,
 	}
 	if req.Title != nil {
 		params.Title = pgtype.Text{String: *req.Title, Valid: true}
@@ -487,6 +527,17 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 			params.LeadID = leadUUID
 		} else {
 			params.LeadID = pgtype.UUID{Valid: false}
+		}
+	}
+	if _, ok := rawFields["default_agent_id"]; ok {
+		if req.DefaultAgentID != nil {
+			agentUUID, ok := h.resolveProjectDefaultAgent(w, r, req.DefaultAgentID, wsUUID)
+			if !ok {
+				return
+			}
+			params.DefaultAgentID = agentUUID
+		} else {
+			params.DefaultAgentID = pgtype.UUID{Valid: false}
 		}
 	}
 	project, err := h.Queries.UpdateProject(r.Context(), params)

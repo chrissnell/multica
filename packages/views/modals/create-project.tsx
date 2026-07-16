@@ -133,6 +133,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
   const [priority, setPriority] = useState<ProjectPriority>(draft.priority);
   const [leadType, setLeadType] = useState<"member" | "agent" | undefined>(draft.leadType);
   const [leadId, setLeadId] = useState<string | undefined>(draft.leadId);
+  const [defaultAgentId, setDefaultAgentId] = useState<string | undefined>(draft.defaultAgentId);
   const [icon, setIcon] = useState<string | undefined>(draft.icon);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -212,6 +213,10 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
     setDraft({ leadType: type, leadId: id });
   };
   const updateIcon = (v: string | undefined) => { setIcon(v); setDraft({ icon: v }); };
+  const updateDefaultAgent = (id?: string) => {
+    setDefaultAgentId(id);
+    setDraft({ defaultAgentId: id });
+  };
 
   const [leadOpen, setLeadOpen] = useState(false);
   const [leadFilter, setLeadFilter] = useState("");
@@ -224,6 +229,15 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
 
   const leadLabel =
     leadType && leadId ? getActorName(leadType, leadId) : t(($) => $.create_project.lead);
+
+  const [defaultAgentOpen, setDefaultAgentOpen] = useState(false);
+  const [defaultAgentFilter, setDefaultAgentFilter] = useState("");
+  const defaultAgentQuery = defaultAgentFilter.toLowerCase();
+  const filteredDefaultAgents = agents.filter(
+    (a) => !a.archived_at && (a.name.toLowerCase().includes(defaultAgentQuery) || matchesPinyin(a.name, defaultAgentQuery)),
+  );
+  const defaultAgentLabel =
+    defaultAgentId ? getActorName("agent", defaultAgentId) : t(($) => $.create_project.default_agent);
 
   const createProject = useCreateProject();
 
@@ -266,6 +280,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
         priority,
         lead_type: leadType,
         lead_id: leadId,
+        default_agent_id: defaultAgentId,
         // Server attaches these in the same transaction as the project.
         resources,
       });
@@ -537,6 +552,72 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                       {t(($) => $.create_project.no_results)}
                     </div>
                   )}
+              </div>
+            </PopoverContent>
+          </Popover>
+
+          <Popover
+            open={defaultAgentOpen}
+            onOpenChange={(v) => {
+              setDefaultAgentOpen(v);
+              if (!v) setDefaultAgentFilter("");
+            }}
+          >
+            <PopoverTrigger
+              render={
+                <PillButton>
+                  {defaultAgentId ? (
+                    <>
+                      <ActorAvatar actorType="agent" actorId={defaultAgentId} size="sm" showStatusDot />
+                      <span>{defaultAgentLabel}</span>
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">{t(($) => $.create_project.default_agent)}</span>
+                  )}
+                </PillButton>
+              }
+            />
+            <PopoverContent align="start" className="w-52 p-0">
+              <div className="px-2 py-1.5 border-b">
+                <input
+                  type="text"
+                  value={defaultAgentFilter}
+                  onChange={(e) => setDefaultAgentFilter(e.target.value)}
+                  placeholder={t(($) => $.create_project.default_agent_placeholder)}
+                  className="w-full bg-transparent text-sm placeholder:text-muted-foreground outline-none"
+                />
+              </div>
+              <div className="p-1 max-h-60 overflow-y-auto">
+                <button
+                  type="button"
+                  onClick={() => {
+                    updateDefaultAgent(undefined);
+                    setDefaultAgentOpen(false);
+                  }}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors"
+                >
+                  <UserMinus className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="text-muted-foreground">{t(($) => $.create_project.no_default_agent)}</span>
+                </button>
+                {filteredDefaultAgents.map((a) => (
+                  <button
+                    type="button"
+                    key={a.id}
+                    onClick={() => {
+                      updateDefaultAgent(a.id);
+                      setDefaultAgentOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors"
+                  >
+                    <ActorAvatar actorType="agent" actorId={a.id} size="sm" showStatusDot />
+                    <span>{a.name}</span>
+                  </button>
+                ))}
+                {filteredDefaultAgents.length === 0 && (
+                  <div className="px-2 py-3 text-center text-sm text-muted-foreground">
+                    {t(($) => $.create_project.no_results)}
+                  </div>
+                )}
               </div>
             </PopoverContent>
           </Popover>

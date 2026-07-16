@@ -24,6 +24,7 @@
     "status": "状态",
     "progress": "进度",
     "lead": "负责人",
+    "default_agent": "默认智能体",
     "created": "创建时间",
     "issues": "Issue 数"
   },
@@ -46,6 +47,11 @@
     "assign_placeholder": "指派负责人...",
     "members_group": "成员",
     "agents_group": "智能体",
+    "no_results": "未找到结果"
+  },
+  "default_agent": {
+    "none": "无默认智能体",
+    "assign_placeholder": "设置默认智能体...",
     "no_results": "未找到结果"
   },
   "relative_date": {

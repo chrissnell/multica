@@ -377,6 +377,7 @@ const ProjectSchema = z.object({
   priority: z.string(),
   lead_type: z.string().nullable(),
   lead_id: z.string().nullable(),
+  default_agent_id: z.string().nullable().default(null),
   created_at: z.string(),
   updated_at: z.string(),
   issue_count: z.number().default(0),
