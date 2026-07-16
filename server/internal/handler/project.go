@@ -230,11 +230,17 @@ func (h *Handler) writeProjectWriteError(w http.ResponseWriter, r *http.Request,
 }
 
 // resolveProjectDefaultAgent parses an optional default_agent_id and verifies
-// the referenced agent exists in the workspace. It mirrors
-// validateAutopilotAssignee's agent case: a project default is always an agent,
-// so squad/member types are not accepted here. Writes a 400 and returns
-// ok=false on any failure. A nil idStr yields a zero (invalid) UUID with
-// ok=true — the caller treats that as "no default agent".
+// the referenced agent is a valid, invocable default for this project. A
+// project default is always an agent (no squad/member), and setting it is an
+// invocation grant: an unassigned issue created in the project back-fills this
+// agent and fires a run. So this enforces the SAME gate the direct assignee
+// path applies in validateAssigneePair — agent exists in the workspace, is not
+// archived, and the caller may invoke it — otherwise configuring a default
+// could smuggle a run onto a private agent the caller cannot invoke.
+//
+// Writes the appropriate error (400 for bad/unknown/archived, 403 for a
+// private agent the caller cannot invoke) and returns ok=false on any failure.
+// A nil idStr yields a zero (invalid) UUID with ok=true — "no default agent".
 func (h *Handler) resolveProjectDefaultAgent(w http.ResponseWriter, r *http.Request, idStr *string, workspaceID pgtype.UUID) (pgtype.UUID, bool) {
 	if idStr == nil {
 		return pgtype.UUID{}, true
@@ -243,11 +249,22 @@ func (h *Handler) resolveProjectDefaultAgent(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return pgtype.UUID{}, false
 	}
-	if _, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+	agent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
 		ID:          agentID,
 		WorkspaceID: workspaceID,
-	}); err != nil {
+	})
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "default_agent_id must be a valid agent in this workspace")
+		return pgtype.UUID{}, false
+	}
+	if agent.ArchivedAt.Valid {
+		writeError(w, http.StatusBadRequest, "cannot set an archived agent as the default agent")
+		return pgtype.UUID{}, false
+	}
+	wsStr := uuidToString(workspaceID)
+	actorType, actorID := h.resolveActor(r, requestUserID(r), wsStr)
+	if !h.canInvokeAgent(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), wsStr) {
+		writeError(w, http.StatusForbidden, "cannot set a private agent you cannot invoke as the default agent")
 		return pgtype.UUID{}, false
 	}
 	return agentID, true
