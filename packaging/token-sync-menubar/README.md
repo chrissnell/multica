@@ -39,13 +39,44 @@ healthy transitions.
 ```
 
 Runs `swift build -c release`, assembles the `.app` bundle at
-`build/Multica Token Sync.app`, and ad-hoc code-signs it.
+`build/Multica Token Sync.app`, and code-signs it.
 
 Smoke test without installing:
 
 ```bash
 open "build/Multica Token Sync.app"
 ```
+
+### Code signing and the recurring keychain prompt
+
+The app reads the `Claude Code-credentials` login-keychain item. macOS ties
+the item's "Always Allow" grant to the accessing app's *designated
+requirement*. An **ad-hoc** signature's requirement is the raw code hash,
+which changes on every rebuild — so each reinstall silently invalidates the
+grant and macOS re-prompts:
+
+> *Multica Token Sync wants to access key "Claude Code-credentials"…*
+
+Signing with a stable **Developer ID Application** identity fixes this: its
+requirement is keyed by bundle id + team, so it survives rebuilds and updates.
+Click **Always Allow** once after the first Developer-ID-signed install and
+the prompt stops for good.
+
+`build.sh` auto-selects the first `Developer ID Application` identity in your
+login keychain. Override or pin it explicitly:
+
+```bash
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh
+# or by cert SHA-1:
+CODESIGN_IDENTITY=ABCDEF0123... ./build.sh
+```
+
+If no Developer ID identity is found the build falls back to ad-hoc signing
+and prints a warning; the app still runs but the keychain prompt will keep
+returning after each rebuild.
+
+> Notarization is **not** required — the keychain grant only depends on a
+> stable signing identity, not on notarization or Gatekeeper approval.
 
 ## Install
 
