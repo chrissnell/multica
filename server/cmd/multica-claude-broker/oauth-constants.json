@@ -4,9 +4,9 @@
   "version_header": "oauth-2025-04-20",
   "scopes": "user:profile user:inference user:sessions:claude_code user:mcp_servers",
   "_meta": {
-    "extracted_at": "2026-07-11T11:11:26Z",
-    "extracted_from": "/tmp/tmp.UHwZNtZ2AP/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
-    "claude_version": "2.1.207",
+    "extracted_at": "2026-07-21T11:51:24Z",
+    "extracted_from": "/tmp/tmp.LWUEjdazZ9/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+    "claude_version": "2.1.216",
     "format": "elf",
     "extractor_rev": "2"
   }
