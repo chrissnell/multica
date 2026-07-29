@@ -18,31 +18,19 @@ import {
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
-  Inbox,
-  MessageSquare,
-  ListTodo,
-  Activity,
-  Bot,
-  Monitor,
   ChevronDown,
   ChevronRight,
-  Settings,
   LogOut,
   Plus,
   Check,
-  BookOpenText,
   SquarePen,
-  CircleUser,
-  FolderKanban,
-  BarChart3,
   X,
-  Zap,
-  Users,
 } from "lucide-react";
 import { WorkspaceAvatar } from "../workspace/workspace-avatar";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@multica/ui/components/ui/collapsible";
+import { CappedNumberFlow } from "@multica/ui/components/ui/number-flow";
 import { StatusIcon } from "../issues/components/status-icon";
 import { useIssueDraftStore } from "@multica/core/issues/stores/draft-store";
 import { openCreateIssueWithPreference } from "@multica/core/issues/stores/create-mode-store";
@@ -87,11 +75,13 @@ import { projectDetailOptions } from "@multica/core/projects/queries";
 import type { PinnedItem } from "@multica/core/types";
 import { useLogout } from "../auth";
 import { ProjectIcon } from "../projects/components/project-icon";
+import { routeIconForPath } from "./route-icon-components";
 import { useT } from "../i18n";
 import {
   useShortcut,
 } from "@multica/core/shortcuts";
 import { ShortcutKeycaps } from "../common/shortcut-keycaps";
+import { useAppForeground } from "../common/use-app-foreground";
 
 // Top-level nav items stay active when the user is on a child route
 // (e.g. "Projects" stays lit on /:slug/projects/:id). Pinned items keep
@@ -130,7 +120,8 @@ type NavKey =
   | "skills"
   | "settings";
 
-// Static schema (key + icon) — labels resolved at render via useT("layout").
+// Static schema (key only) — labels resolved at render via useT("layout"),
+// icons derived from the destination path via routeIconForPath.
 type NavLabelKey =
   | "inbox"
   | "chat"
@@ -146,30 +137,33 @@ type NavLabelKey =
   | "skills"
   | "settings";
 
-const personalNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
-  { key: "inbox", labelKey: "inbox", icon: Inbox },
-  { key: "chat", labelKey: "chat", icon: MessageSquare },
-  { key: "myIssues", labelKey: "my_issues", icon: CircleUser },
+// Nav icons are NOT declared here: they are derived from each item's
+// destination path at render time, so the sidebar and the desktop tab bar
+// always agree. See route-icon-components.tsx.
+const personalNav: { key: NavKey; labelKey: NavLabelKey }[] = [
+  { key: "inbox", labelKey: "inbox" },
+  { key: "chat", labelKey: "chat" },
+  { key: "myIssues", labelKey: "my_issues" },
 ];
 
-const workspaceNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
-  { key: "issues", labelKey: "issues", icon: ListTodo },
-  { key: "activeIssues", labelKey: "active_issues", icon: Activity },
-  { key: "projects", labelKey: "projects", icon: FolderKanban },
-  { key: "autopilots", labelKey: "autopilots", icon: Zap },
-  { key: "agents", labelKey: "agents", icon: Bot },
-  { key: "squads", labelKey: "squads", icon: Users },
-  { key: "usage", labelKey: "usage", icon: BarChart3 },
+const workspaceNav: { key: NavKey; labelKey: NavLabelKey }[] = [
+  { key: "issues", labelKey: "issues" },
+  { key: "activeIssues", labelKey: "active_issues" },
+  { key: "projects", labelKey: "projects" },
+  { key: "autopilots", labelKey: "autopilots" },
+  { key: "agents", labelKey: "agents" },
+  { key: "squads", labelKey: "squads" },
+  { key: "usage", labelKey: "usage" },
 ];
 
-const configureNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
-  { key: "runtimes", labelKey: "runtimes", icon: Monitor },
-  { key: "skills", labelKey: "skills", icon: BookOpenText },
-  { key: "settings", labelKey: "settings", icon: Settings },
+const configureNav: { key: NavKey; labelKey: NavLabelKey }[] = [
+  { key: "runtimes", labelKey: "runtimes" },
+  { key: "skills", labelKey: "skills" },
+  { key: "settings", labelKey: "settings" },
 ];
 
 function DraftDot() {
-  const hasDraft = useIssueDraftStore((s) => !!(s.draft.title || s.draft.description));
+  const hasDraft = useIssueDraftStore((s) => s.hasDraft());
   if (!hasDraft) return null;
   return <span className="absolute top-0 right-0 size-1.5 rounded-full bg-brand" />;
 }
@@ -390,15 +384,19 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   // The session the user is reading right now must not count: the thread list
   // renders its row badge as 0 (auto mark-read is about to clear it), and a
   // reply landing in the open conversation would otherwise flash a sidebar
-  // count with no matching row. "Reading right now" = a session is active AND
-  // a chat surface is actually showing it (chat page route or the floating
-  // window). A remembered selection while both surfaces are closed still
-  // counts — auto mark-read won't fire there, so the badge must.
+  // count with no matching row. "Reading right now" = a session is active, a
+  // chat surface is actually showing it (chat page route or the floating
+  // window), AND the app is in the foreground. When the app is backgrounded,
+  // auto mark-read is suppressed (MUL-4485) so the reply stays unread — the
+  // badge must count it, or the notification is silently eaten while the user
+  // is away. A remembered selection while both surfaces are closed also still
+  // counts, for the same reason.
   const activeChatSessionId = useChatStore((s) => s.activeSessionId);
   const floatingChatOpen = useChatStore((s) => s.isOpen);
+  const appForeground = useAppForeground();
   const chatHref = p.chat();
   const viewedChatSessionId =
-    floatingChatOpen || isNavActive(pathname, chatHref)
+    appForeground && (floatingChatOpen || isNavActive(pathname, chatHref))
       ? activeChatSessionId
       : null;
   const chatUnreadCount = React.useMemo(
@@ -669,6 +667,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
               <SidebarMenu className="gap-0.5">
                 {personalNav.map((item) => {
                   const href = p[item.key]();
+                  const Icon = routeIconForPath(href);
                   const isActive = isNavActive(pathname, href);
                   return (
                     <SidebarMenuItem key={item.key}>
@@ -677,17 +676,21 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                         render={<AppLink href={href} />}
                         className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
                       >
-                        <item.icon />
+                        <Icon />
                         <span>{t(($) => $.nav[item.labelKey])}</span>
                         {item.key === "inbox" && unreadCount > 0 && (
-                          <span className="ml-auto text-xs">
-                            {unreadCount > 99 ? "99+" : unreadCount}
-                          </span>
+                          <CappedNumberFlow
+                            value={unreadCount}
+                            animated={false}
+                            className="ml-auto text-xs"
+                          />
                         )}
                         {item.key === "chat" && chatUnreadCount > 0 && (
-                          <span className="ml-auto text-xs">
-                            {chatUnreadCount > 99 ? "99+" : chatUnreadCount}
-                          </span>
+                          <CappedNumberFlow
+                            value={chatUnreadCount}
+                            animated={false}
+                            className="ml-auto text-xs"
+                          />
                         )}
                       </SidebarMenuButton>
                     </SidebarMenuItem>
@@ -738,6 +741,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
               <SidebarMenu className="gap-0.5">
                 {workspaceNav.map((item) => {
                   const href = p[item.key]();
+                  const Icon = routeIconForPath(href);
                   const isActive = !isActivePinnedRoute && isNavActive(pathname, href);
                   return (
                     <SidebarMenuItem key={item.key}>
@@ -746,7 +750,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                         render={<AppLink href={href} />}
                         className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
                       >
-                        <item.icon />
+                        <Icon />
                         <span>{t(($) => $.nav[item.labelKey])}</span>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
@@ -762,6 +766,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
               <SidebarMenu className="gap-0.5">
                 {configureNav.map((item) => {
                   const href = p[item.key]();
+                  const Icon = routeIconForPath(href);
                   const isActive = isNavActive(pathname, href);
                   return (
                     <SidebarMenuItem key={item.key}>
@@ -770,7 +775,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                         render={<AppLink href={href} />}
                         className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
                       >
-                        <item.icon />
+                        <Icon />
                         <span>{t(($) => $.nav[item.labelKey])}</span>
                       </SidebarMenuButton>
                     </SidebarMenuItem>

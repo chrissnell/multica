@@ -112,6 +112,12 @@ vi.mock("@multica/ui/components/ui/dropdown-menu", () => ({
   DropdownMenuContent: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
+  DropdownMenuGroup: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
+  DropdownMenuLabel: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
   DropdownMenuItem: ({
     children,
     onClick,
@@ -187,6 +193,8 @@ const PROJECT: Project = {
   lead_type: null,
   lead_id: null,
   default_agent_id: null,
+  start_date: null,
+  due_date: null,
   created_at: "2026-06-01T00:00:00Z",
   updated_at: "2026-06-01T00:00:00Z",
   issue_count: 3,

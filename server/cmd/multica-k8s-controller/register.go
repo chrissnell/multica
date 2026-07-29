@@ -26,6 +26,13 @@ type Registered struct {
 	// rights bound to that SA (via the chart's worker-rbac.yaml). Empty =
 	// pod uses the namespace `default` SA, i.e. no cluster API access.
 	ServiceAccountName string
+	// ExecutablePath overrides the agent CLI path used for in-process model
+	// discovery (handleModelList). Empty is the normal case: the controller
+	// pod ships no agent CLI, so provider discovery fails on the default
+	// command name and agent.ListModels returns the static catalog. Tests set
+	// this to a fixed missing path so discovery is exercised without resolving
+	// (and executing) an ambient CLI on PATH.
+	ExecutablePath string
 }
 
 // RegisterAll posts one Register call per workspace tuple in cfg and returns
@@ -156,7 +163,7 @@ func dispatchHeartbeatActions(ctx context.Context, cli *daemon.Client, r Registe
 func handleModelList(ctx context.Context, cli *daemon.Client, r Registered, requestID string) {
 	slog.Default().Info("model list requested",
 		"runtime_id", r.RuntimeID, "request_id", requestID, "provider", r.Provider)
-	payload := daemon.BuildModelListPayload(ctx, r.Provider, "")
+	payload := daemon.BuildModelListPayload(ctx, r.Provider, r.ExecutablePath)
 	if err := cli.ReportModelListResult(ctx, r.RuntimeID, requestID, payload); err != nil {
 		slog.Default().Error("model list report failed",
 			"runtime_id", r.RuntimeID, "request_id", requestID, "error", err)

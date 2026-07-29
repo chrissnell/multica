@@ -30,7 +30,7 @@ func SweepFailedJobs(ctx context.Context, cli *daemon.Client, k kubernetes.Inter
 			continue
 		}
 		reason := jobFailureReason(&j)
-		_ = cli.FailTask(ctx, taskID, reason, "", "", "agent_error")
+		_ = cli.FailTask(ctx, taskID, reason, "", "", "agent_error", false)
 		_ = k.BatchV1().Jobs(namespace).Delete(ctx, j.Name, metav1.DeleteOptions{})
 	}
 	return nil

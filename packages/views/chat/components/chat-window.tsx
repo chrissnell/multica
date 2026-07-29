@@ -16,11 +16,12 @@ import { toast } from "sonner";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useAuthStore } from "@multica/core/auth";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
+import { projectListOptions } from "@multica/core/projects/queries";
 import { canAssignAgent } from "@multica/views/issues/components";
 import { api } from "@multica/core/api";
 import { useAgentPresenceDetail, useWorkspaceAgentAvailability } from "@multica/core/agents";
-import { useFileUpload } from "@multica/core/hooks/use-file-upload";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { useAppForeground } from "../../common/use-app-foreground";
 import {
   PickerEmpty,
   PickerItem,
@@ -43,15 +44,23 @@ import {
   useCreateChatSession,
   useMarkChatSessionRead,
   useSetChatSessionArchived,
+  useSetChatSessionProject,
   useUpdateChatSession,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
+import { removeChatMessageFromCaches } from "@multica/core/realtime";
+import { useChatDraftRestore } from "./use-chat-draft-restore";
 import { ChatMessageList, ChatMessageSkeleton } from "./chat-message-list";
 import { ChatInput } from "./chat-input";
 import { ChatResizeHandles } from "./chat-resize-handles";
 import { useChatContextItems } from "./use-chat-context-items";
 import { useChatResize } from "./use-chat-resize";
-import { hasOptimisticInFlight } from "./use-chat-controller";
+import {
+  hasInFlightPendingTask,
+  isStillOnComposeTarget,
+  planProjectContextChange,
+} from "./use-chat-controller";
+import { useChatProjectContextSupport } from "./use-chat-project-context-support";
 import { createLogger } from "@multica/core/logger";
 import type { Agent, Attachment, ChatMessage, ChatMessagesPage, ChatPendingTask, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
 import { useT } from "../../i18n";
@@ -92,83 +101,17 @@ function appendChatMessageToLatestPageCache(
   );
 }
 
-function removeChatMessageFromPageCache(
-  qc: ReturnType<typeof useQueryClient>,
-  sessionId: string,
-  messageId: string,
-) {
-  qc.setQueryData<InfiniteData<ChatMessagesPage> | undefined>(
-    chatKeys.messagesPage(sessionId),
-    (old) => {
-      if (!old) return old;
-      return {
-        ...old,
-        pages: old.pages.map((page) => ({
-          ...page,
-          messages: page.messages.filter((m) => m.id !== messageId),
-        })),
-      };
-    },
-  );
-}
-
-function removeChatMessageFromCaches(
-  qc: ReturnType<typeof useQueryClient>,
-  sessionId: string,
-  messageId: string,
-) {
-  qc.setQueryData<ChatMessage[]>(
-    chatKeys.messages(sessionId),
-    (old) => old?.filter((m) => m.id !== messageId) ?? old,
-  );
-  removeChatMessageFromPageCache(qc, sessionId, messageId);
-}
-
-function replaceOptimisticChatMessageId(
-  qc: ReturnType<typeof useQueryClient>,
-  sessionId: string,
-  optimisticId: string,
-  messageId: string,
-  taskId: string,
-) {
-  const replace = (messages: ChatMessage[] | undefined) => {
-    if (!messages) return messages;
-    if (messages.some((m) => m.id === messageId)) {
-      return messages.filter((m) => m.id !== optimisticId);
-    }
-    return messages.map((m) =>
-      m.id === optimisticId ? { ...m, id: messageId, task_id: taskId } : m,
-    );
-  };
-
-  qc.setQueryData<ChatMessage[]>(
-    chatKeys.messages(sessionId),
-    replace,
-  );
-  qc.setQueryData<InfiniteData<ChatMessagesPage> | undefined>(
-    chatKeys.messagesPage(sessionId),
-    (old) => {
-      if (!old) return old;
-      return {
-        ...old,
-        pages: old.pages.map((page) => ({
-          ...page,
-          messages: replace(page.messages) ?? page.messages,
-        })),
-      };
-    },
-  );
-}
-
 export function ChatWindow() {
   const { t } = useT("chat");
   const wsId = useWorkspaceId();
   const isOpen = useChatStore((s) => s.isOpen);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const selectedAgentId = useChatStore((s) => s.selectedAgentId);
+  const selectedProjectId = useChatStore((s) => s.selectedProjectId);
   const setOpen = useChatStore((s) => s.setOpen);
   const setActiveSession = useChatStore((s) => s.setActiveSession);
   const setSelectedAgentId = useChatStore((s) => s.setSelectedAgentId);
+  const setSelectedProjectId = useChatStore((s) => s.setSelectedProjectId);
   const user = useAuthStore((s) => s.user);
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
@@ -176,6 +119,9 @@ export function ChatWindow() {
   // that used to drift during the WS-invalidate window.
   const { data: sessions = [], isSuccess: sessionsLoaded } = useQuery(
     chatSessionsOptions(wsId),
+  );
+  const { data: projects = [], isSuccess: projectsLoaded } = useQuery(
+    projectListOptions(wsId),
   );
   const {
     data: rawMessagePages,
@@ -211,15 +157,20 @@ export function ChatWindow() {
   );
   const pendingTaskId = pendingTask?.task_id ?? null;
   const stopRequestedBeforeTaskRef = useRef(false);
-  const [restoreDraftRequest, setRestoreDraftRequest] = useState<{
-    id: string;
-    content: string;
-    attachments?: Attachment[];
-    sessionId?: string;
-  } | null>(null);
-  const handleRestoreDraftConsumed = useCallback(() => {
-    setRestoreDraftRequest(null);
-  }, []);
+  // Durable deferred-cancellation draft restores (#5219). Same hook as the chat
+  // page controller — the skip/apply/consume/reconcile state machine must not
+  // diverge between the two composers.
+  //
+  // Gated on isOpen AND app foreground: this window stays MOUNTED when closed
+  // (it is only hidden, see isVisible below), and isOpen alone is also true for a
+  // backgrounded browser tab. Its ChatInput would otherwise adopt and consume a
+  // restore with nobody looking at it — stealing the prompt from the composer the
+  // user is actually waiting on, possibly on another device. Only a composer the
+  // user can actually see claims; a re-foregrounded window recovers on its next
+  // fetch. (appForeground also gates auto mark-read below.)
+  const appForeground = useAppForeground();
+  const { restoreDraftRequest, enqueueLocalRestore, handleRestoreDraftApplied } =
+    useChatDraftRestore(activeSessionId, isOpen && appForeground);
   // Nonce handed to ChatInput to pull focus into the compose box when a new
   // chat starts (⊕ or switching agent). 0 is inert so opening the window on an
   // existing session never steals focus.
@@ -237,10 +188,24 @@ export function ChatWindow() {
     ? sessions.find((s) => s.id === activeSessionId)
     : null;
   const isSessionArchived = currentSession?.status === "archived";
+  const candidateProjectId = currentSession
+    ? currentSession.project_id ?? null
+    : selectedProjectId;
+  const activeProjectId = candidateProjectId &&
+    (!projectsLoaded || projects.some((project) => project.id === candidateProjectId))
+    ? candidateProjectId
+    : null;
+
+  useEffect(() => {
+    if (!projectsLoaded || !selectedProjectId) return;
+    if (projects.some((project) => project.id === selectedProjectId)) return;
+    setSelectedProjectId(null);
+  }, [projectsLoaded, projects, selectedProjectId, setSelectedProjectId]);
 
   const qc = useQueryClient();
   const createSession = useCreateChatSession();
   const markRead = useMarkChatSessionRead();
+  const setSessionProject = useSetChatSessionProject();
 
   const currentMember = members.find((m) => m.user_id === user?.id);
   const memberRole = currentMember?.role;
@@ -266,6 +231,8 @@ export function ChatWindow() {
     availableAgents.find((a) => a.id === selectedAgentId) ??
     availableAgents[0] ??
     null;
+
+  const projectContextSupport = useChatProjectContextSupport(wsId, activeAgent);
 
   // Three-state availability — "loading" stays neutral (no banner, no
   // disable) so the input doesn't flash a fake "no agent" state in the
@@ -305,18 +272,18 @@ export function ChatWindow() {
   // Self-heal a dangling `activeSessionId` (persisted / restored from storage)
   // that points at a session which was deleted or lost access: once the
   // sessions list has loaded and doesn't contain it — with no in-flight
-  // optimistic write exempting a just-created session — clear it so the
+  // pending task exempting a just-created session — clear it so the
   // floating window shows the new-chat state instead of an editable empty chat
   // whose send would POST into a nonexistent session. Same fix the shared
-  // controller applies for the tab (kept in sync via `hasOptimisticInFlight`).
+  // controller applies for the tab (kept in sync via `hasInFlightPendingTask`).
   // The earlier "no self-heal" note was about a naive version keyed on stale
-  // `allSessions`; the optimistic-write signal here exempts the freshly-created
-  // session (handleSend seeds its optimistic message + pending task BEFORE
-  // setActiveSession), so it is never mistaken for stale.
+  // `allSessions`; the in-flight-pending-task signal here exempts the
+  // freshly-created session (handleSend seeds its pending task from the send
+  // response BEFORE setActiveSession), so it is never mistaken for stale.
   useEffect(() => {
     if (!activeSessionId || !sessionsLoaded) return;
     if (sessions.some((s) => s.id === activeSessionId)) return;
-    if (hasOptimisticInFlight(qc, activeSessionId)) return;
+    if (hasInFlightPendingTask(qc, activeSessionId)) return;
     uiLogger.info("clearing dangling activeSessionId (floating)", { sessionId: activeSessionId });
     setActiveSession(null);
   }, [activeSessionId, sessionsLoaded, sessions, qc, setActiveSession]);
@@ -325,21 +292,22 @@ export function ChatWindow() {
   // stays current even when this window is closed. See packages/core/realtime/.
 
   // Auto mark-as-read whenever the user is looking at a session with unread
-  // state: window open + a session active + has_unread → PATCH.
-  // has_unread comes from the list query; WS handlers invalidate it on
-  // chat:done so a reply arriving while the user watches triggers this
-  // effect again and is instantly cleared.
+  // state: window open + app in the foreground + a session active + has_unread
+  // → PATCH. has_unread comes from the list query; WS handlers invalidate it on
+  // chat:done so a reply arriving while the user watches triggers this effect
+  // again and is instantly cleared. `appForeground` gates the "is looking"
+  // assumption: a reply landing while the window is open but the app is
+  // backgrounded must stay unread so the sidebar badges it (MUL-4485), then
+  // clears when the user refocuses and this effect re-runs.
   const currentHasUnread =
     sessions.find((s) => s.id === activeSessionId)?.has_unread ?? false;
   useEffect(() => {
-    if (!isOpen || !activeSessionId) return;
+    if (!isOpen || !appForeground || !activeSessionId) return;
     if (!currentHasUnread) return;
     uiLogger.info("auto markRead", { sessionId: activeSessionId });
     markRead.mutate(activeSessionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- markRead ref stable
-  }, [isOpen, activeSessionId, currentHasUnread]);
-
-  const { uploadWithToast } = useFileUpload(api);
+  }, [isOpen, appForeground, activeSessionId, currentHasUnread]);
 
   // Lazy-creates a chat_session the first time the user needs an id —
   // either to send a message or to attach an uploaded file. Pulled out of
@@ -376,7 +344,7 @@ export function ChatWindow() {
         activeSessionId &&
         (!sessionsLoaded ||
           sessions.some((s) => s.id === activeSessionId) ||
-          hasOptimisticInFlight(qc, activeSessionId))
+          hasInFlightPendingTask(qc, activeSessionId))
       ) {
         return activeSessionId;
       }
@@ -388,6 +356,7 @@ export function ChatWindow() {
           const session = await createSession.mutateAsync({
             agent_id: activeAgent.id,
             title: titleSeed.slice(0, 50),
+            project_id: activeProjectId,
           });
           return session.id;
         } finally {
@@ -397,20 +366,21 @@ export function ChatWindow() {
       sessionPromiseRef.current = promise;
       return promise;
     },
-    [activeSessionId, activeAgent, createSession, sessions, sessionsLoaded, qc],
+    [
+      activeSessionId,
+      activeAgent,
+      activeProjectId,
+      createSession,
+      sessions,
+      sessionsLoaded,
+      qc,
+    ],
   );
 
-  const handleUploadFile = useCallback(
-    async (file: File) => {
-      if (!activeAgent) return null;
-      // Uploads are workspace-scoped drafts. Sending the message is the point
-      // where we create a chat session (if needed) and bind attachment_ids to
-      // the persisted chat_message row. This keeps a paste/drop from creating
-      // an empty chat session the user never sends.
-      return uploadWithToast(file);
-    },
-    [activeAgent, uploadWithToast],
-  );
+  // Upload transport moved into the coordinated-upload engine inside ChatInput
+  // (MUL-5181 L2); the host only says whether the affordance exists. Uploads
+  // remain workspace-scoped drafts — sending is still the point where a
+  // session is created (if needed) and attachment_ids bind to the message.
 
   const cancelChatTask = useCallback(
     async (
@@ -431,7 +401,7 @@ export function ChatWindow() {
         if (restored?.restore_to_input) {
           removeChatMessageFromCaches(qc, restored.chat_session_id, restored.message_id);
           if (options.restoreDraftToInput && restored.chat_session_id === sessionId) {
-            setRestoreDraftRequest({
+            enqueueLocalRestore({
               id: restored.message_id,
               content: restored.content,
               attachments: restored.attachments,
@@ -458,7 +428,7 @@ export function ChatWindow() {
         return null;
       }
     },
-    [qc],
+    [qc, enqueueLocalRestore],
   );
 
   const handleSend = useCallback(
@@ -508,77 +478,17 @@ export function ChatWindow() {
         return false;
       }
 
-      // Optimistic burst — everything that gives the user "I sent a message
-      // and the agent is now working" feedback fires BEFORE the HTTP roundtrip.
-      // Pre-#status-pill the pending-task seed lived after `await
-      // sendChatMessage` and the pill blinked in a few hundred ms after the
-      // user's message — small but visible "did it actually send?" gap.
-      const sentAt = new Date().toISOString();
-      const optimistic: ChatMessage = {
-        id: `optimistic-${Date.now()}`,
-        chat_session_id: sessionId,
-        role: "user",
-        content: finalContent,
-        task_id: null,
-        created_at: sentAt,
-        attachments: draftAttachments,
-      };
-      // Seed cache BEFORE flipping activeSessionId. If we set the active
-      // session first, useQuery's first subscription to the new key sees no
-      // cached data and renders ChatMessageSkeleton for one frame — the
-      // "new-chat first-message" white flash. Priming the cache first means
-      // the very first read after activeSessionId flips hits data
-      // synchronously and ChatMessageList mounts directly.
-      appendChatMessageToLatestPageCache(qc, sessionId, optimistic);
-      qc.setQueryData<ChatMessage[]>(
-        chatKeys.messages(sessionId),
-        (old) => (old ? [...old, optimistic] : [optimistic]),
-      );
-      // Seed the pending-task with a temporary id so the StatusPill mounts
-      // and starts ticking the instant the user clicks send. Real task_id
-      // and server-authoritative created_at land below; until then the pill
-      // is anchored to the local clock (drift is the request RTT, ~50–200ms,
-      // which doesn't change the rendered "Ns" value).
-      qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), {
-        task_id: `optimistic-${optimistic.id}`,
-        status: "queued",
-        created_at: sentAt,
-      });
-      // Cache primed → safe to publish the new active session. But only steal
-      // focus if the user is STILL on the compose target they sent from — if
-      // they navigated away mid-send, this is fire-and-forget: the reply
-      // surfaces via the unread dot on the sent session, we don't yank the
-      // view back. Compare the live store against the closure-captured target.
-      // For a brand-new chat (activeSessionId === null) the target is keyed by
-      // the selected agent, so switching agents to start a different new chat
-      // must also count as "navigated away" even though both sides are null.
-      const live = useChatStore.getState();
-      const stillOnSourceSession =
-        live.activeSessionId === activeSessionId &&
-        (activeSessionId !== null || live.selectedAgentId === selectedAgentId);
-      if (stillOnSourceSession) {
-        setActiveSession(sessionId);
-      }
-      commitInput?.({ extraDraftKeys: [sessionId], clearEditor: stillOnSourceSession });
-      apiLogger.debug("sendChatMessage.optimistic", { sessionId, optimisticId: optimistic.id });
-
+      // Await-then-render: the composer keeps the user's text and attachments
+      // in place (editor locked, button spinning via `submitting`) until the
+      // server accepts the send. Nothing is written into the caches, and the
+      // draft is never cleared, before the roundtrip settles — a slow send never
+      // reads as "posted but the box is still full", and a rejected one keeps
+      // the draft for retry (ChatInput never cleared it).
       let result;
       try {
         result = await api.sendChatMessage(sessionId, finalContent, attachmentIds);
       } catch (err) {
-        apiLogger.error("sendChatMessage.error.rollback", { sessionId, optimisticId: optimistic.id, err });
-        stopRequestedBeforeTaskRef.current = false;
-        removeChatMessageFromCaches(qc, sessionId, optimistic.id);
-        qc.setQueryData(chatKeys.pendingTask(sessionId), {});
-        setRestoreDraftRequest({
-          id: `send-failed-${optimistic.id}`,
-          content: finalContent,
-          attachments: draftAttachments,
-          // Restore into the session this was sent from. If the user
-          // navigated away (fire-and-forget) the request waits until they
-          // return rather than dumping content into another session.
-          sessionId,
-        });
+        apiLogger.error("sendChatMessage.error", { sessionId, err });
         toast.error(t(($) => $.input.send_failed_toast));
         return false;
       }
@@ -587,15 +497,49 @@ export function ChatWindow() {
         messageId: result.message_id,
         taskId: result.task_id,
       });
-      replaceOptimisticChatMessageId(qc, sessionId, optimistic.id, result.message_id, result.task_id);
-      // Replace the temporary task_id with the server's real one (so the WS
-      // task: handlers can match against it) and snap the anchor to the
-      // server's created_at — keeping the elapsed-seconds reading stable.
+
+      // Render the accepted message from the server response. Seed the message
+      // caches BEFORE flipping activeSessionId: if we set the active session
+      // first, useQuery's first subscription to the new key sees no cached data
+      // and renders ChatMessageSkeleton for one frame — the "new-chat
+      // first-message" white flash. Priming the cache first means the very first
+      // read after activeSessionId flips hits data synchronously and
+      // ChatMessageList mounts directly. Seed the pending-task from the server's
+      // real id + created_at so the StatusPill mounts anchored to the true clock
+      // (no local-clock drift, no backwards snap) and the stale-session self-heal
+      // exempts this just-created session until the sessions-list refetch lands.
+      const sent: ChatMessage = {
+        id: result.message_id,
+        chat_session_id: sessionId,
+        role: "user",
+        content: finalContent,
+        task_id: result.task_id,
+        created_at: result.created_at,
+        attachments: draftAttachments,
+      };
+      appendChatMessageToLatestPageCache(qc, sessionId, sent);
+      qc.setQueryData<ChatMessage[]>(
+        chatKeys.messages(sessionId),
+        (old) => (old ? [...old, sent] : [sent]),
+      );
       qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), {
         task_id: result.task_id,
         status: "queued",
         created_at: result.created_at,
       });
+      // Cache primed → publish the new active session, but only if the user
+      // hasn't navigated away mid-send. Compare the live store against the
+      // closure-captured target; see isStillOnComposeTarget for the rule, which
+      // this floating window shares with the chat tab's controller. commitInput
+      // clears the sent draft, and scrubs the shared editor only when the user
+      // is still on the session they sent from.
+      const live = useChatStore.getState();
+      const stillOnSourceSession = isStillOnComposeTarget(live.activeSessionId, activeSessionId);
+      if (stillOnSourceSession) {
+        setActiveSession(sessionId);
+      }
+      commitInput?.({ extraDraftKeys: [sessionId], clearEditor: stillOnSourceSession });
+
       if (stopRequestedBeforeTaskRef.current) {
         stopRequestedBeforeTaskRef.current = false;
         await cancelChatTask(result.task_id, sessionId, {
@@ -626,7 +570,6 @@ export function ChatWindow() {
     },
     [
       activeSessionId,
-      selectedAgentId,
       activeAgent,
       isAgentArchived,
       ensureSession,
@@ -669,11 +612,25 @@ export function ChatWindow() {
         previousSessionId: activeSessionId,
       });
       setSelectedAgentId(agent.id);
+      // Preserve an explicitly chosen project while composing an unsent chat,
+      // but never inherit project context from the historical session being
+      // left behind.
+      setSelectedProjectId(currentSession ? null : activeProjectId);
       // Reset session when switching agent
       setActiveSession(null);
       requestInputFocus();
     },
-    [activeAgent, selectedAgentId, activeSessionId, setSelectedAgentId, setActiveSession, requestInputFocus],
+    [
+      activeAgent,
+      selectedAgentId,
+      activeSessionId,
+      activeProjectId,
+      currentSession,
+      setSelectedAgentId,
+      setSelectedProjectId,
+      setActiveSession,
+      requestInputFocus,
+    ],
   );
 
   const handleNewChat = useCallback(() => {
@@ -681,9 +638,16 @@ export function ChatWindow() {
       previousSessionId: activeSessionId,
       previousPendingTask: pendingTaskId,
     });
+    setSelectedProjectId(null);
     setActiveSession(null);
     requestInputFocus();
-  }, [activeSessionId, pendingTaskId, setActiveSession, requestInputFocus]);
+  }, [
+    activeSessionId,
+    pendingTaskId,
+    setSelectedProjectId,
+    setActiveSession,
+    requestInputFocus,
+  ]);
 
   const handleSelectSession = useCallback(
     (session: ChatSession) => {
@@ -700,6 +664,47 @@ export function ChatWindow() {
       setActiveSession(session.id);
     },
     [activeAgent, setSelectedAgentId, setActiveSession],
+  );
+
+  const handleProjectChange = useCallback(
+    (projectId: string | null) => {
+      if (projectId === activeProjectId) return;
+      uiLogger.info("selectProjectContext", {
+        from: activeProjectId,
+        to: projectId,
+        previousSessionId: activeSessionId,
+      });
+      const plan = planProjectContextChange({
+        targetProjectId: projectId,
+        activeSessionId,
+        currentSession: currentSession ?? null,
+      });
+      switch (plan.kind) {
+        case "awaitSession":
+          return;
+        case "detachCurrent":
+          setSessionProject.mutate({ sessionId: plan.sessionId, projectId: null });
+          break;
+        case "startFreshChat":
+          setSelectedAgentId(plan.agentId);
+          setSelectedProjectId(plan.projectId);
+          setActiveSession(null);
+          break;
+        case "setDraftProject":
+          setSelectedProjectId(plan.projectId);
+          break;
+      }
+      requestInputFocus();
+    }, [
+      activeProjectId,
+      activeSessionId,
+      currentSession,
+      setSessionProject,
+      setSelectedAgentId,
+      setSelectedProjectId,
+      setActiveSession,
+      requestInputFocus,
+    ],
   );
 
   const handleMinimize = useCallback(() => {
@@ -857,14 +862,21 @@ export function ChatWindow() {
       <ChatInput
         onSend={handleSend}
         restoreDraftRequest={restoreDraftRequest}
-        onRestoreDraftConsumed={handleRestoreDraftConsumed}
-        onUploadFile={handleUploadFile}
+        onRestoreDraftApplied={handleRestoreDraftApplied}
+        uploadEnabled={!!activeAgent}
         onStop={handleStop}
         isRunning={!!pendingTaskId}
         disabled={isSessionArchived || isAgentArchived}
         noAgent={noAgent}
         agentArchived={isAgentArchived}
         agentName={activeAgent?.name}
+        projects={projects}
+        projectId={activeProjectId}
+        onProjectChange={handleProjectChange}
+        projectContextUnsupported={projectContextSupport === false}
+        isProjectUpdating={
+          setSessionProject.isPending || (!!activeSessionId && !currentSession)
+        }
         leftAdornment={
           <AgentDropdown
             agents={availableAgents}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -111,7 +112,11 @@ func TestHeartbeatLoop_RespondsToPendingModelList(t *testing.T) {
 	cli.SetToken("tk")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	runtimes := []Registered{{RuntimeID: "rt-X", Provider: "copilot"}}
+	// A fixed missing path keeps model discovery from resolving (and executing)
+	// an ambient copilot CLI on PATH: exec of a nonexistent absolute path fails
+	// without a PATH lookup, so agent.ListModels falls back to the static
+	// catalog — the same result the CLI-less controller pod gets in production.
+	runtimes := []Registered{{RuntimeID: "rt-X", Provider: "copilot", ExecutablePath: filepath.Join(t.TempDir(), "copilot")}}
 
 	done := make(chan struct{})
 	go func() {
