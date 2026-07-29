@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
+import { CurrencyNumberFlow } from "@multica/ui/components/ui/number-flow";
 import type {
   Agent,
   AgentRuntime,
@@ -61,7 +62,7 @@ import {
   computeCostInWindow,
   pctChange,
 } from "../utils";
-import { splitRuntimeName } from "./runtime-machines";
+import { runtimeRowLabel } from "./runtime-machines";
 import {
   customRuntimeRegistrationFailure,
   isDisabledCustomRuntime,
@@ -184,8 +185,21 @@ export function buildWorkloadIndex(
 // Cells
 // ---------------------------------------------------------------------------
 
-function RuntimeNameCell({ runtime }: { runtime: AgentRuntime }) {
-  const { base: baseName } = splitRuntimeName(runtime.name);
+function RuntimeNameCell({
+  runtime,
+  machineTitle,
+}: {
+  runtime: AgentRuntime;
+  /**
+   * The containing machine's title. Lets a per-runtime alias surface here
+   * while a machine-level rename (shared by every runtime on the daemon)
+   * collapses to the provider base so it isn't repeated on every row
+   * (MUL-5248). Omitted when the row has no machine context (orphan custom
+   * runtime profiles), where any alias is shown verbatim.
+   */
+  machineTitle?: string;
+}) {
+  const label = runtimeRowLabel(runtime, machineTitle ?? "");
   return (
     <ListGridCell className="gap-2">
       <div className="flex h-8 w-8 shrink-0 items-center justify-center">
@@ -193,7 +207,7 @@ function RuntimeNameCell({ runtime }: { runtime: AgentRuntime }) {
       </div>
       <div className="flex min-w-0 flex-1 items-center gap-1.5">
         <span className="block min-w-0 shrink truncate text-sm font-medium">
-          {baseName}
+          {label}
         </span>
         <RuntimeKindBadge runtime={runtime} />
         <PendingRuntimeBadge runtime={runtime} />
@@ -360,8 +374,9 @@ function HealthCell({
 const COST_CELL_DAYS = 14;
 
 export function CostCell({ runtimeId }: { runtimeId: string }) {
-  const { t } = useT("runtimes");
+  const { t, i18n } = useT("runtimes");
   const tz = useViewingTimezone();
+  const locales = i18n.resolvedLanguage ?? i18n.language;
   const { data: usage = [] } = useQuery(
     runtimeUsageOptions(runtimeId, COST_CELL_DAYS, tz),
   );
@@ -396,7 +411,12 @@ export function CostCell({ runtimeId }: { runtimeId: string }) {
         : `${delta > 0 ? "↑" : "↓"}${Math.abs(delta)}%`;
   return (
     <div className="flex w-full flex-col items-end leading-tight">
-      <span className="text-sm font-medium tabular-nums">{fmt}</span>
+      <CurrencyNumberFlow
+        value={cost7d}
+        locales={locales}
+        aria-label={fmt}
+        className="text-sm font-medium"
+      />
       {deltaLabel && (
         <span className={`text-[11px] tabular-nums ${deltaTone}`}>
           {deltaLabel}
@@ -457,8 +477,8 @@ export function CliCell({ runtime }: { runtime: AgentRuntime }) {
   // The separate `cli_version` is the shared multica daemon CLI, identical
   // for every runtime on one machine; surfacing it here made all agents
   // show the same number (#3838). The daemon CLI version and its update
-  // prompt belong to the machine — they live in the machine meta strip and
-  // the detail page's UpdateSection, not on a per-agent row.
+  // prompt belong to the machine — they live in the machine header, not on a
+  // per-agent row.
   const version =
     meta && typeof meta.version === "string" ? meta.version : null;
 
@@ -606,23 +626,21 @@ export function RuntimeRowMenu({
 
 export function RuntimeList({
   runtimes,
-  updatableIds,
   now,
   runtimeHref,
+  machineTitle,
 }: {
   runtimes: AgentRuntime[];
-  // Kept on the API surface for callers, but unused here: the CLI column
-  // shows each agent's own tool version, while the multica daemon CLI
-  // update prompt lives at the machine/detail level (UpdateSection), so the
-  // table no longer derives per-row update state. Left to avoid scope creep
-  // on the page-level wrapper that still computes the set.
-  updatableIds?: Set<string>;
   now: number;
   /** Machine-detail pages keep runtime settings nested under the machine. */
   runtimeHref?: (runtimeId: string) => string;
+  /**
+   * The containing machine's title, when this list renders the runtimes of a
+   * single machine. Used so a machine-level alias doesn't repeat on every row
+   * while a per-runtime alias still shows (MUL-5248).
+   */
+  machineTitle?: string;
 }) {
-  void updatableIds;
-
   const { t } = useT("runtimes");
   const wsId = useWorkspaceId();
   const wsPaths = useWorkspacePaths();
@@ -736,7 +754,7 @@ export function RuntimeList({
                   )
                 : {})}
             >
-              <RuntimeNameCell runtime={row.runtime} />
+              <RuntimeNameCell runtime={row.runtime} machineTitle={machineTitle} />
               <HealthCell
                 runtime={row.runtime}
                 workload={row.workload}

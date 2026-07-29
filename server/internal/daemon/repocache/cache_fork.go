@@ -19,7 +19,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // appendForkGitConfig adds the fork's env-scoped git config to the environment
@@ -261,26 +260,6 @@ func gitRemoteSetURL(clonePath, name, url string) error {
 // existing clone. On collision (a stale agent/* branch leaked from a prior
 // run on this same workdir), it appends a timestamp and retries once —
 // same behaviour the daemon-mode worktree-add path has.
-func checkoutNewBranch(clonePath, branchName, baseRef string) (string, error) {
-	cmd := exec.Command("git", "-C", clonePath, "checkout", "-b", branchName, baseRef)
-	cmd.Env = gitEnv()
-	if out, err := cmd.CombinedOutput(); err == nil {
-		return branchName, nil
-	} else {
-		wrapped := fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
-		if !isBranchCollisionError(wrapped) {
-			return "", wrapped
-		}
-	}
-	branchName = fmt.Sprintf("%s-%d", branchName, time.Now().Unix())
-	cmd = exec.Command("git", "-C", clonePath, "checkout", "-b", branchName, baseRef)
-	cmd.Env = gitEnv()
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git checkout -b (retry): %s: %w", strings.TrimSpace(string(out)), err)
-	}
-	return branchName, nil
-}
-
 // refreshSharedClone updates a reused per-issue clone for a new task:
 // reset and clean any leftover changes, fetch latest refs (which go
 // through the gitconfig rewrite to the cache), and create a fresh agent

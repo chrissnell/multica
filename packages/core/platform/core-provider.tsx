@@ -18,7 +18,11 @@ import { defaultStorage } from "./storage";
 import { AuthInitializer } from "./auth-initializer";
 import type { CoreProviderProps, ClientIdentity } from "./types";
 import type { StorageAdapter } from "../types/storage";
-import { configureShortcutPlatform } from "../shortcuts/platform";
+import { ClientUsageReporter } from "../client-usage";
+import {
+  configureShortcutPlatform,
+  configureShortcutRuntime,
+} from "../shortcuts/platform";
 
 // Module-level singletons — created once at first render, never recreated.
 // Vite HMR preserves module-level state, so these survive hot reloads.
@@ -42,6 +46,11 @@ function initCore(
       identity?.os === "unknown"
       ? identity.os
       : null,
+  );
+  // Authoritative override; before this runs (module-eval store hydration)
+  // detectShortcutRuntime() reads the preload globals and already agrees.
+  configureShortcutRuntime(
+    identity?.platform === "desktop" ? "desktop" : null,
   );
 
   const api = new ApiClient(apiBaseUrl, {
@@ -109,6 +118,11 @@ export function CoreProvider({
         cookieAuth={cookieAuth}
         identity={identity}
       >
+        {/* Desktop's reporter owns both activity and runtime state so it must
+            be the only writer for that installation. */}
+        {identity?.platform !== "desktop" && (
+          <ClientUsageReporter storage={storage} identity={identity} />
+        )}
         <WSProvider
           wsUrl={wsUrl}
           authStore={authStore}

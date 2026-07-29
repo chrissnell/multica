@@ -46,8 +46,9 @@ func ProbeAgents() (map[string]AgentEntry, error) {
 		cmd := envOrDefault(envVar, defaultCmd)
 		if path, err := resolveAgentExecutablePath(cmd); err == nil {
 			return AgentEntry{
-				Path:  path,
-				Model: strings.TrimSpace(os.Getenv(modelEnv)),
+				Path:    path,
+				Command: cmd,
+				Model:   strings.TrimSpace(os.Getenv(modelEnv)),
 			}, true
 		}
 		// The shell fallback only rescues bare command names. An operator
@@ -59,8 +60,9 @@ func ProbeAgents() (map[string]AgentEntry, error) {
 		}
 		if path, ok := getShellResolved()[cmd]; ok {
 			return AgentEntry{
-				Path:  path,
-				Model: strings.TrimSpace(os.Getenv(modelEnv)),
+				Path:    path,
+				Command: cmd,
+				Model:   strings.TrimSpace(os.Getenv(modelEnv)),
 			}, true
 		}
 		if defaultCmd == "codex" && cmd == defaultCmd {
@@ -69,8 +71,9 @@ func ProbeAgents() (map[string]AgentEntry, error) {
 			for _, p := range codexDesktopAppBundlePaths() {
 				if _, err := os.Stat(p); err == nil {
 					return AgentEntry{
-						Path:  p,
-						Model: strings.TrimSpace(os.Getenv(modelEnv)),
+						Path:    p,
+						Command: cmd,
+						Model:   strings.TrimSpace(os.Getenv(modelEnv)),
 					}, true
 				}
 			}
@@ -87,6 +90,9 @@ func ProbeAgents() (map[string]AgentEntry, error) {
 	}
 	if e, ok := probe("MULTICA_OPENCODE_PATH", "opencode", "MULTICA_OPENCODE_MODEL"); ok {
 		agents["opencode"] = e
+	}
+	if e, ok := probe("MULTICA_DEVECO_PATH", "deveco", "MULTICA_DEVECO_MODEL"); ok {
+		agents["deveco"] = e
 	}
 	if e, ok := probe("MULTICA_OPENCLAW_PATH", "openclaw", "MULTICA_OPENCLAW_MODEL"); ok {
 		agents["openclaw"] = e
@@ -122,8 +128,9 @@ func ProbeAgents() (map[string]AgentEntry, error) {
 	qoderPath := envOrDefault("MULTICA_QODER_PATH", "qodercli")
 	if path, err := resolveAgentExecutablePath(qoderPath); err == nil {
 		agents["qoder"] = AgentEntry{
-			Path:  path,
-			Model: strings.TrimSpace(os.Getenv("MULTICA_QODER_MODEL")),
+			Path:    path,
+			Command: qoderPath,
+			Model:   strings.TrimSpace(os.Getenv("MULTICA_QODER_MODEL")),
 		}
 	}
 	// ByteDance official TRAE CLI (the `traecli` binary from https://docs.trae.cn/cli),
@@ -133,8 +140,19 @@ func ProbeAgents() (map[string]AgentEntry, error) {
 	if e, ok := probe("MULTICA_TRAECLI_PATH", "traecli", "MULTICA_TRAECLI_MODEL"); ok {
 		agents["traecli"] = e
 	}
+	// xAI Grok Build CLI (`grok`), driven over ACP via
+	// `grok agent --always-approve stdio`. MULTICA_GROK_MODEL seeds the
+	// daemon-wide default (e.g. grok-4.5).
+	if e, ok := probe("MULTICA_GROK_PATH", "grok", "MULTICA_GROK_MODEL"); ok {
+		agents["grok"] = e
+	}
+	// Qwen Code (`qwen`) runs headlessly with -p and stream-json. Its native
+	// QWEN.md and .qwen/skills task context is prepared by execenv.
+	if e, ok := probe("MULTICA_QWEN_PATH", "qwen", "MULTICA_QWEN_MODEL"); ok {
+		agents["qwen"] = e
+	}
 	if len(agents) == 0 {
-		return nil, fmt.Errorf("no agent CLI found: install claude, codebuddy, codex, copilot, opencode, openclaw, hermes, pi, cursor-agent, kimi, kiro-cli, agy, qodercli, or traecli and ensure it is on PATH")
+		return nil, fmt.Errorf("no agent CLI found: install claude, codebuddy, codex, copilot, opencode, deveco, openclaw, hermes, pi, cursor-agent, kimi, kiro-cli, agy, qodercli, traecli, grok, or qwen and ensure it is on PATH")
 	}
 	return agents, nil
 }
