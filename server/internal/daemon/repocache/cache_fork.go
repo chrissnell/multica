@@ -256,10 +256,6 @@ func gitRemoteSetURL(clonePath, name, url string) error {
 	return nil
 }
 
-// checkoutNewBranch creates and checks out a branch from baseRef inside an
-// existing clone. On collision (a stale agent/* branch leaked from a prior
-// run on this same workdir), it appends a timestamp and retries once —
-// same behaviour the daemon-mode worktree-add path has.
 // refreshSharedClone updates a reused per-issue clone for a new task:
 // reset and clean any leftover changes, fetch latest refs (which go
 // through the gitconfig rewrite to the cache), and create a fresh agent

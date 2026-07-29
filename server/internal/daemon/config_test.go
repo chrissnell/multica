@@ -934,6 +934,62 @@ func pinNonCodexAgentsToMissingPaths(t *testing.T) {
 	}
 }
 
+// pinAllAgentsToMissingPaths pins every agent's MULTICA_*_PATH to a missing
+// absolute path so ProbeAgents hard-misses each one: an absolute path that does
+// not exist fails resolution, and the probe skips the login-shell fallback for
+// any value containing a path separator. The result is a hermetic zero-agent
+// config regardless of the host's PATH, $SHELL, or Codex Desktop bundle.
+func pinAllAgentsToMissingPaths(t *testing.T) {
+	t.Helper()
+	missingDir := t.TempDir()
+	for _, name := range []string{
+		"MULTICA_CLAUDE_PATH", "MULTICA_CODEX_PATH", "MULTICA_OPENCODE_PATH",
+		"MULTICA_DEVECO_PATH", "MULTICA_OPENCLAW_PATH", "MULTICA_HERMES_PATH",
+		"MULTICA_PI_PATH", "MULTICA_CURSOR_PATH", "MULTICA_COPILOT_PATH",
+		"MULTICA_KIMI_PATH", "MULTICA_KIRO_PATH", "MULTICA_CODEBUDDY_PATH",
+		"MULTICA_ANTIGRAVITY_PATH", "MULTICA_QODER_PATH", "MULTICA_TRAECLI_PATH",
+		"MULTICA_GROK_PATH", "MULTICA_QWEN_PATH",
+	} {
+		t.Setenv(name, filepath.Join(missingDir, strings.ToLower(name)))
+	}
+}
+
+// A host with zero agent CLIs must still fail daemon startup (AllowNoAgents
+// defaults false) but succeed for read-only probes like `daemon
+// probe-runtimes`, which set AllowNoAgents. Regression guard for the upstream
+// v0.4.13 merge, where the fork's extracted ProbeAgents() seam baked the
+// "no agent CLI found" error in unconditionally and the LoadConfig call site
+// stopped consulting the override.
+func TestLoadConfigAllowNoAgentsPermitsZeroAgents(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("MULTICA_DAEMON_ID", "11111111-1111-1111-1111-111111111111")
+	pinAllAgentsToMissingPaths(t)
+
+	// Default startup path: no override, must refuse to run with no agent CLI.
+	if _, err := LoadConfig(Overrides{
+		ServerURL:      "http://localhost:0",
+		WorkspacesRoot: t.TempDir(),
+	}); err == nil {
+		t.Fatal("LoadConfig without AllowNoAgents: expected a 'no agent CLI found' error, got nil")
+	}
+
+	// Read-only probe path: AllowNoAgents downgrades the empty probe to success.
+	cfg, err := LoadConfig(Overrides{
+		ServerURL:      "http://localhost:0",
+		WorkspacesRoot: t.TempDir(),
+		AllowNoAgents:  true,
+	})
+	if err != nil {
+		t.Fatalf("LoadConfig with AllowNoAgents: %v", err)
+	}
+	if cfg.Agents == nil {
+		t.Fatal("cfg.Agents must be a non-nil empty map, got nil")
+	}
+	if len(cfg.Agents) != 0 {
+		t.Fatalf("expected zero agents, got %#v", cfg.Agents)
+	}
+}
+
 // =============================================================================
 // CLI config Backends.OpenClaw overrides (issue #3875)
 // =============================================================================

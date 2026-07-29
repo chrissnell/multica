@@ -214,8 +214,16 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	}
 
 	agents, err := ProbeAgents()
-	if err != nil {
+	// AllowNoAgents (read-only config probes such as `multica daemon
+	// probe-runtimes`) tolerates a host with no agent CLI installed. ProbeAgents
+	// still returns the "no agent CLI found" error — the daemon-start and
+	// run-task paths rely on it — but here we downgrade that to an empty agent
+	// set so the probe reports zero runtimes instead of failing.
+	if err != nil && !overrides.AllowNoAgents {
 		return Config{}, err
+	}
+	if agents == nil {
+		agents = map[string]AgentEntry{}
 	}
 
 	claudeArgs, err := shellArgsFromEnv("MULTICA_CLAUDE_ARGS")
