@@ -163,6 +163,72 @@ func TestCreateIssueExplicitAssigneeBeatsProjectDefault(t *testing.T) {
 	}
 }
 
+// When the creator IS the project's default agent, the issue is NOT routed
+// back to that agent. An agent that creates an unassigned issue in its own
+// default-agent project is already running; assigning it back to itself would
+// fire a redundant self-run that has duplicated sub-issue decompositions. The
+// issue stays unassigned and no task is enqueued.
+func TestCreateIssueSkipsDefaultBackfillWhenCreatorIsDefaultAgent(t *testing.T) {
+	ctx := context.Background()
+	pool := newDefaultAgentTestPool(t)
+	wsID, _, agentID, projectID := defaultAgentFixture(t, ctx, pool)
+	svc := newDefaultAgentIssueService(pool)
+
+	res, err := svc.Create(ctx, IssueCreateParams{
+		WorkspaceID: util.MustParseUUID(wsID),
+		Title:       "agent creates in its own default project",
+		Status:      "todo",
+		Priority:    "none",
+		CreatorType: "agent",
+		CreatorID:   util.MustParseUUID(agentID),
+		ProjectID:   util.MustParseUUID(projectID),
+	}, IssueCreateOpts{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if res.Issue.AssigneeType.Valid || res.Issue.AssigneeID.Valid {
+		t.Fatalf("expected unassigned (no self back-fill), got type=%+v id=%s",
+			res.Issue.AssigneeType, util.UUIDToString(res.Issue.AssigneeID))
+	}
+	var pending int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM agent_task_queue WHERE agent_id = $1`, agentID).Scan(&pending); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if pending != 0 {
+		t.Fatalf("expected no enqueued task for the self-created issue, got %d", pending)
+	}
+}
+
+// A different agent creating an unassigned issue is still routed to the project
+// default agent (delegation) — the self-skip is narrow. Here the creator is an
+// agent other than the default, so the back-fill still applies.
+func TestCreateIssueBackfillsDefaultWhenCreatorIsDifferentAgent(t *testing.T) {
+	ctx := context.Background()
+	pool := newDefaultAgentTestPool(t)
+	wsID, userID, agentID, projectID := defaultAgentFixture(t, ctx, pool)
+	svc := newDefaultAgentIssueService(pool)
+
+	// userID is a valid UUID distinct from the default agent; tagging the
+	// creator as an agent makes this the "different agent" branch (no FK, so
+	// the creator row need not be a real agent for the back-fill decision).
+	res, err := svc.Create(ctx, IssueCreateParams{
+		WorkspaceID: util.MustParseUUID(wsID),
+		Title:       "different agent delegates to default",
+		Status:      "todo",
+		Priority:    "none",
+		CreatorType: "agent",
+		CreatorID:   util.MustParseUUID(userID),
+		ProjectID:   util.MustParseUUID(projectID),
+	}, IssueCreateOpts{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := util.UUIDToString(res.Issue.AssigneeID); got != agentID {
+		t.Fatalf("different-agent creator should still back-fill default %s, got %s", agentID, got)
+	}
+}
+
 // A backlog issue is still assigned the default agent, but the enqueue is
 // parked (backlog is a pre-assign parking lot) — assignment happens regardless
 // of status.

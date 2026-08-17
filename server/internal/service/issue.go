@@ -222,7 +222,20 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 		// via its existing readiness gate whether a run actually fires (an
 		// offline / archived default leaves the issue assigned but idle,
 		// exactly as a manual assignment to that agent would).
-		if project.DefaultAgentID.Valid && !p.AssigneeType.Valid && !p.AssigneeID.Valid {
+		//
+		// Exception: do NOT route the issue back to the default agent when that
+		// agent is the one creating it. An agent that creates an unassigned
+		// issue in its own default-agent project is already executing the run
+		// that made this call; assigning the issue back to itself fires a
+		// redundant self-run, and that self-run has re-run plan decompositions
+		// and produced duplicate sub-issues (the creating run and the auto-fired
+		// run both act on the same plan). Leave it unassigned in that self case.
+		// A different agent still routes to the default (delegation), and an
+		// explicit assignee still wins — so a deliberate "start now"
+		// self-assignment is unaffected.
+		creatorIsDefaultAgent := p.CreatorType == "agent" && p.CreatorID.Valid &&
+			project.DefaultAgentID.Valid && p.CreatorID.Bytes == project.DefaultAgentID.Bytes
+		if project.DefaultAgentID.Valid && !p.AssigneeType.Valid && !p.AssigneeID.Valid && !creatorIsDefaultAgent {
 			p.AssigneeType = pgtype.Text{String: "agent", Valid: true}
 			p.AssigneeID = project.DefaultAgentID
 		}
