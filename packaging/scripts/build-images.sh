@@ -88,7 +88,7 @@ build_runtime() {
   # Toolchain pins for the runtime base. Each lives in its own text file
   # so future watcher workflows can bump them via PR (same pattern as
   # claude-code-version).
-  local rust_version kotlin_version golangci_lint_version ktlint_version pnpm_version kubectl_version helm_version gh_version wrangler_version rclone_version protoc_version
+  local rust_version kotlin_version golangci_lint_version ktlint_version pnpm_version kubectl_version helm_version gh_version wrangler_version rclone_version protoc_version terraform_version terraform_cloudflare_provider_version
   rust_version="$(read_pin rust-version)"
   kotlin_version="$(read_pin kotlin-version)"
   golangci_lint_version="$(read_pin golangci-lint-version)"
@@ -100,12 +100,15 @@ build_runtime() {
   wrangler_version="$(read_pin wrangler-version)"
   rclone_version="$(read_pin rclone-version)"
   protoc_version="$(read_pin protoc-version)"
+  terraform_version="$(read_pin terraform-version)"
+  terraform_cloudflare_provider_version="$(read_pin terraform-cloudflare-provider-version)"
 
   echo "==> Building $base (version=$version commit=$commit)"
   echo "    rust=$rust_version kotlin=$kotlin_version pnpm=$pnpm_version"
   echo "    golangci-lint=$golangci_lint_version ktlint=$ktlint_version"
   echo "    kubectl=$kubectl_version helm=$helm_version gh=$gh_version"
   echo "    wrangler=$wrangler_version rclone=$rclone_version protoc=$protoc_version"
+  echo "    terraform=$terraform_version cloudflare-provider=$terraform_cloudflare_provider_version"
 
   if [[ -n "${BUILDKIT_ADDR:-}" ]]; then
     # CI path: in-cluster buildkitd, no local docker daemon. push=true is
@@ -134,6 +137,8 @@ build_runtime() {
       --opt build-arg:WRANGLER_VERSION="$wrangler_version" \
       --opt build-arg:RCLONE_VERSION="$rclone_version" \
       --opt build-arg:PROTOC_VERSION="$protoc_version" \
+      --opt build-arg:TERRAFORM_VERSION="$terraform_version" \
+      --opt build-arg:TERRAFORM_CLOUDFLARE_PROVIDER_VERSION="$terraform_cloudflare_provider_version" \
       --output "type=image,name=$base,push=true"
     echo "==> Building $claude (FROM $base, claude-code=$claude_code_version)"
     buildctl --addr "$BUILDKIT_ADDR" build \
@@ -162,6 +167,8 @@ build_runtime() {
     --build-arg WRANGLER_VERSION="$wrangler_version" \
     --build-arg RCLONE_VERSION="$rclone_version" \
     --build-arg PROTOC_VERSION="$protoc_version" \
+    --build-arg TERRAFORM_VERSION="$terraform_version" \
+    --build-arg TERRAFORM_CLOUDFLARE_PROVIDER_VERSION="$terraform_cloudflare_provider_version" \
     -f packaging/docker/runtime/Dockerfile.base \
     -t "$base" .
   if [[ "$push" -eq 1 ]]; then
