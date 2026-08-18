@@ -136,6 +136,10 @@ check on each merge:
 - Copy-to-clipboard button on blockquotes in the issue timeline
 - Per-action duration + time-since-completion in the execution-log transcript
 - Claude plan-limits (session + weekly) in the left toolbar
+- Mark-as-done button in the issue detail header on every surface, not gated on
+  `onDone` (reverts upstream #1934, which made it inbox-only)
+- Inbox issue detail keeps the right sidebar (properties + quick actions) open
+  by default (reverts upstream's hide-by-default)
 
 ### Verify before marking a PR ready
 

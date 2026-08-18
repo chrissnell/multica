@@ -436,8 +436,11 @@ export function InboxPage() {
       <IssueDetail
         key={selected.issue_id}
         issueId={selected.issue_id}
-        defaultSidebarOpen={false}
-        layoutId="multica_inbox_issue_detail_layout"
+        /* Fork divergence from upstream: keep the right sidebar (properties +
+           quick actions) open by default. The layout id is versioned past the
+           old key so a persisted sidebar:0 from the hidden-by-default era
+           doesn't keep the column closed. */
+        layoutId="multica_inbox_issue_detail_layout_v2"
         highlightCommentId={selected.details?.comment_id ?? undefined}
         onDelete={() => {
           // Issue deletion CASCADE-deletes the inbox item server-side, and the
