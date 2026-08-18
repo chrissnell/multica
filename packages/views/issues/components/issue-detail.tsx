@@ -2305,7 +2305,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 it never overlaps the title (which truncates to make room).
                 It self-hides when no agent is active. */}
             <IssueAgentHeaderChip issueId={id} />
-            {onDone && issue.status !== "done" && issue.status !== "cancelled" && (
+            {/* Fork divergence from upstream #1934: visible on every surface,
+                not just the inbox (the only caller that passes onDone). */}
+            {issue.status !== "done" && issue.status !== "cancelled" && (
               <Tooltip>
                 <TooltipTrigger
                   render={

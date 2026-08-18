@@ -847,6 +847,46 @@ describe("IssueDetail (shared)", () => {
     expect(screen.queryByText("Properties")).not.toBeInTheDocument();
   });
 
+  it("shows the mark-as-done header button even without an onDone prop", async () => {
+    // Fork divergence from upstream #1934: the button must be visible on every
+    // issue detail surface (issues view, sub-issues, desktop window), not just
+    // the inbox, which is the only caller that passes onDone.
+    renderIssueDetail();
+
+    await waitFor(() => {
+      expect(screen.getByText("Implement authentication")).toBeInTheDocument();
+    });
+
+    const icon = document.querySelector("svg.lucide-circle-check");
+    expect(icon).not.toBeNull();
+    const button = icon!.closest("button");
+    expect(button).not.toBeNull();
+
+    fireEvent.click(button!);
+
+    await waitFor(() => {
+      expect(mockApiObj.updateIssue).toHaveBeenCalledWith(
+        "issue-1",
+        expect.objectContaining({ status: "done" }),
+      );
+    });
+  });
+
+  it.each(["done", "cancelled"] as const)(
+    "hides the mark-as-done header button when the issue is %s",
+    async (status) => {
+      mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, status });
+
+      renderIssueDetail();
+
+      await waitFor(() => {
+        expect(screen.getByText("Implement authentication")).toBeInTheDocument();
+      });
+
+      expect(document.querySelector("svg.lucide-circle-check")).toBeNull();
+    },
+  );
+
   it("hides metadata content from the sidebar and shows a button when the bag has keys", async () => {
     // Metadata is agent-facing; the sidebar only exposes a button that opens
     // the raw JSON on demand. Keys are NOT rendered inline anywhere.

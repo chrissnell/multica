@@ -63,8 +63,13 @@ vi.mock("@multica/core/inbox/mutations", () => {
   };
 });
 
+const issueDetailProps = vi.hoisted(() => ({ calls: [] as Record<string, unknown>[] }));
+
 vi.mock("../../issues/components", () => ({
-  IssueDetail: () => null,
+  IssueDetail: (props: Record<string, unknown>) => {
+    issueDetailProps.calls.push(props);
+    return null;
+  },
   StatusIcon: () => null,
 }));
 
@@ -213,6 +218,25 @@ describe("InboxPage", () => {
     fireEvent.click(screen.getByTestId("row"));
 
     expect(replace).toHaveBeenCalledWith("/acme/inbox?issue=issue-3");
+  });
+
+  it("does not force the issue detail sidebar closed", () => {
+    // Fork divergence from upstream: the inbox detail pane keeps the right
+    // sidebar (properties + quick actions) visible by default.
+    reset();
+    issueDetailProps.calls.length = 0;
+    listData.active = [item({ id: "active-1", issue_id: "issue-3" })];
+
+    render(<InboxPage />);
+    fireEvent.click(screen.getByTestId("row"));
+
+    expect(issueDetailProps.calls.length).toBeGreaterThan(0);
+    for (const props of issueDetailProps.calls) {
+      expect(props.defaultSidebarOpen).not.toBe(false);
+      // The versioned layout id is load-bearing: it busts a persisted
+      // sidebar:0 from the hidden-by-default era.
+      expect(props.layoutId).toBe("multica_inbox_issue_detail_layout_v2");
+    }
   });
 
   it("does not swallow a deep link to an issue that is not in the archive", () => {
