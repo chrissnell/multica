@@ -233,6 +233,9 @@ describe("InboxPage", () => {
     expect(issueDetailProps.calls.length).toBeGreaterThan(0);
     for (const props of issueDetailProps.calls) {
       expect(props.defaultSidebarOpen).not.toBe(false);
+      // The versioned layout id is load-bearing: it busts a persisted
+      // sidebar:0 from the hidden-by-default era.
+      expect(props.layoutId).toBe("multica_inbox_issue_detail_layout_v2");
     }
   });
 
