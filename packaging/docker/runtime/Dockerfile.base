@@ -2,8 +2,8 @@
 #
 # Shared base for all Multica agent runtime images: the `multica` binary plus
 # full polyglot toolchains (Go, Rust + cargo-ndk, Node/pnpm, JDK/Kotlin,
-# Android SDK + NDK, Python, protobuf/protoc + Go & Rust codegen plugins)
-# and the debuggers/linters agents need at
+# Android SDK + NDK, Python, protobuf/protoc + Go & Rust codegen plugins,
+# Terraform + a pre-baked Cloudflare provider) and the debuggers/linters agents need at
 # runtime. Per-provider images (Dockerfile.claude, etc.) extend this and
 # add their agent CLI.
 #
@@ -51,6 +51,8 @@ ARG GH_VERSION
 ARG WRANGLER_VERSION
 ARG RCLONE_VERSION
 ARG PROTOC_VERSION
+ARG TERRAFORM_VERSION
+ARG TERRAFORM_CLOUDFLARE_PROVIDER_VERSION
 # Android SDK/NDK component versions don't need a per-file pin (they rarely
 # bump). Defaults stay in-Dockerfile and can be overridden via --build-arg.
 ARG ANDROID_CMDLINE_TOOLS_VERSION=13114758
@@ -68,7 +70,9 @@ RUN test -n "$RUST_VERSION"             || { echo "RUST_VERSION build arg is req
     && test -n "$GH_VERSION"            || { echo "GH_VERSION build arg is required" >&2; exit 1; } \
     && test -n "$WRANGLER_VERSION"      || { echo "WRANGLER_VERSION build arg is required" >&2; exit 1; } \
     && test -n "$RCLONE_VERSION"        || { echo "RCLONE_VERSION build arg is required" >&2; exit 1; } \
-    && test -n "$PROTOC_VERSION"        || { echo "PROTOC_VERSION build arg is required" >&2; exit 1; }
+    && test -n "$PROTOC_VERSION"        || { echo "PROTOC_VERSION build arg is required" >&2; exit 1; } \
+    && test -n "$TERRAFORM_VERSION"     || { echo "TERRAFORM_VERSION build arg is required" >&2; exit 1; } \
+    && test -n "$TERRAFORM_CLOUDFLARE_PROVIDER_VERSION" || { echo "TERRAFORM_CLOUDFLARE_PROVIDER_VERSION build arg is required" >&2; exit 1; }
 
 # Base apt packages: VCS, SSH, build/debug tooling, common dev utilities,
 # JDK 21 for Kotlin/Android Gradle Plugin 8.x. (Trixie doesn't ship a JDK 17
@@ -321,6 +325,31 @@ RUN npm install -g "wrangler@${WRANGLER_VERSION}" \
     && wrangler --version \
     && rclone --version | head -1
 
+# ── Terraform + pre-baked Cloudflare provider ─────────────────────────
+# Terraform CLI from the upstream release zip. The Cloudflare provider
+# (cloudflare/cloudflare) is pre-mirrored into a filesystem mirror so that
+# `terraform init` resolves it locally instead of downloading from the
+# registry at runtime — agents managing Cloudflare in air-gapped or
+# quota-limited pods don't pay a fetch per job. A CLI config at
+# /etc/terraform/terraformrc (wired via TF_CLI_CONFIG_FILE below) serves the
+# cloudflare provider from the mirror and lets every other provider resolve
+# `direct` from the registry as usual. Auth is via env vars injected from a
+# K8s Secret at runtime (CLOUDFLARE_API_TOKEN etc.) — nothing baked in here.
+RUN curl -fsSL -o /tmp/terraform.zip \
+       "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
+    && unzip -q /tmp/terraform.zip -d /usr/local/bin \
+    && rm /tmp/terraform.zip \
+    && chmod +x /usr/local/bin/terraform \
+    && terraform version \
+    && mkdir -p /opt/terraform/plugin-mirror /tmp/tf-mirror /etc/terraform \
+    && printf 'terraform {\n  required_providers {\n    cloudflare = {\n      source  = "cloudflare/cloudflare"\n      version = "%s"\n    }\n  }\n}\n' \
+         "${TERRAFORM_CLOUDFLARE_PROVIDER_VERSION}" > /tmp/tf-mirror/versions.tf \
+    && (cd /tmp/tf-mirror && terraform providers mirror -platform=linux_amd64 /opt/terraform/plugin-mirror) \
+    && rm -rf /tmp/tf-mirror \
+    && printf 'provider_installation {\n  filesystem_mirror {\n    path    = "/opt/terraform/plugin-mirror"\n    include = ["registry.terraform.io/cloudflare/cloudflare"]\n  }\n  direct {\n    exclude = ["registry.terraform.io/cloudflare/cloudflare"]\n  }\n}\n' > /etc/terraform/terraformrc \
+    && chmod -R a+rX /opt/terraform /etc/terraform
+ENV TF_CLI_CONFIG_FILE=/etc/terraform/terraformrc
+
 # Non-root user the daemon and agents run as.
 RUN groupadd -g 1001 multica \
     && useradd -m -u 1001 -g 1001 -s /bin/bash multica
@@ -367,6 +396,8 @@ RUN multica version || true \
     && gh --version \
     && wrangler --version \
     && rclone version | head -1 \
+    && terraform version \
+    && test -d "/opt/terraform/plugin-mirror/registry.terraform.io/cloudflare/cloudflare" \
     && openscad --version 2>&1 | head -1 \
     && gfortran --version | head -1 \
     && autoconf --version | head -1 \
