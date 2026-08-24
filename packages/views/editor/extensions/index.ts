@@ -49,6 +49,7 @@ import { CodeBlockView } from "./code-block-view";
 import { PatchedListItem, PatchedTaskItem } from "./list-item";
 import { createMarkdownPasteExtension } from "./markdown-paste";
 import { createMarkdownCopyExtension } from "./markdown-copy";
+import { createBlockquoteHardBreakExtension } from "./blockquote-hard-break";
 import { createBlurShortcutExtension } from "./blur-shortcut";
 import { createSubmitShortcutExtension } from "./submit-shortcut";
 import { createFileUploadExtension } from "./file-upload";
@@ -213,6 +214,10 @@ export function createEditorExtensions(
     // `- ` still falls through to PatchedListItem's bullet list.
     TaskList,
     PatchedTaskItem,
+    // `> ` at the start of a hard-broken (Shift+Enter) line becomes a blockquote,
+    // matching StarterKit's block-start rule so quotes work anywhere, not just as
+    // the first block.
+    createBlockquoteHardBreakExtension(),
     CodeBlockLowlight.extend({
       addNodeView() {
         return ReactNodeViewRenderer(CodeBlockView);
