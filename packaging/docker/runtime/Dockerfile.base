@@ -404,28 +404,42 @@ ENV HOME=/home/multica \
 # pre-warmed ~/.espressif instead of a throwaway per-checkout .embuild dir
 # (a plain env var overrides the firmware repo's cargo [env] default).
 #
-# Sourcing ~/export-esp.sh from the shell profiles puts LIBCLANG_PATH
-# (bindgen needs it) and xtensa-esp-elf on PATH for every build shell.
+# LIBCLANG_PATH (bindgen needs it) and xtensa-esp-elf on PATH come from
+# ~/export-esp.sh; it is sourced from the login/interactive shell profiles
+# and via BASH_ENV, so non-interactive build shells (`bash -c 'make build'`)
+# pick it up too.
 #
-# The final step best-effort pre-warms the ESP-IDF native toolchain
-# (xtensa-esp-elf GCC + tools) from the PUBLIC esp-idf repo at ESP_IDF_VERSION
-# into ~/.espressif, which embuild reuses at runtime. It deliberately does NOT
-# build the firmware repo: that repo is private and unreachable at image-build
-# time (buildkit gets no GH creds). The step is non-fatal — a fetch hiccup must
-# not break the whole runtime image, and the runtime bootstraps IDF on the
-# first firmware build regardless (network is available there).
+# The first RUN (fatal) installs the pinned esp toolchain + ldproxy — the
+# actual blocker, so a failure there fails the image build. The second RUN
+# best-effort pre-warms the ESP-IDF native toolchain (xtensa-esp-elf GCC +
+# tools) from the PUBLIC esp-idf repo at ESP_IDF_VERSION into ~/.espressif,
+# which embuild reuses at runtime. It deliberately does NOT build the firmware
+# repo: that repo is private and unreachable at image-build time (buildkit
+# gets no GH creds). That step is non-fatal — a fetch hiccup must not break the
+# whole runtime image, and the runtime bootstraps IDF on the first firmware
+# build regardless (network is available there).
+#
+# espup, ldproxy and the esp Rust toolchain are pinned via ARG defaults
+# (overridable with --build-arg) so a runtime rebuild is reproducible.
+ARG ESPUP_VERSION=0.17.1
+ARG LDPROXY_VERSION=0.3.5
+ARG ESP_RUST_VERSION=1.97.0.0
 ARG ESP_TARGET=esp32s3
 ARG ESP_IDF_VERSION=v5.5.3
-ENV ESP_IDF_TOOLS_INSTALL_DIR=global
-RUN cargo install espup --locked \
-    && cargo install ldproxy --locked \
-    && espup install --targets "${ESP_TARGET}" --export-file "$HOME/export-esp.sh" \
+ENV ESP_IDF_TOOLS_INSTALL_DIR=global \
+    BASH_ENV=/home/multica/export-esp.sh
+RUN cargo install espup --locked --version "${ESPUP_VERSION}" \
+    && cargo install ldproxy --locked --version "${LDPROXY_VERSION}" \
+    && espup install \
+         --toolchain-version "${ESP_RUST_VERSION}" \
+         --targets "${ESP_TARGET}" \
+         --export-file "$HOME/export-esp.sh" \
     && printf '\n. "$HOME/export-esp.sh"\n' >> "$HOME/.bashrc" \
-    && printf '\n. "$HOME/export-esp.sh"\n' >> "$HOME/.profile" \
-    && ( set -eux; \
-         git clone -b "${ESP_IDF_VERSION}" --depth 1 https://github.com/espressif/esp-idf.git /tmp/esp-idf \
-         && /tmp/esp-idf/install.sh "${ESP_TARGET}" ) \
-       || { echo "WARN: ESP-IDF pre-warm failed; runtime bootstraps IDF on first build" >&2; rm -rf "$HOME/.espressif"; } \
+    && printf '\n. "$HOME/export-esp.sh"\n' >> "$HOME/.profile"
+RUN ( set -eux; \
+      git clone -b "${ESP_IDF_VERSION}" --depth 1 https://github.com/espressif/esp-idf.git /tmp/esp-idf \
+      && /tmp/esp-idf/install.sh "${ESP_TARGET}" ) \
+      || { echo "WARN: ESP-IDF pre-warm failed; runtime bootstraps IDF on first build" >&2; rm -rf "$HOME/.espressif"; } \
     && rm -rf /tmp/esp-idf
 
 # Sanity: key tools resolve on PATH for the multica user.
@@ -470,4 +484,4 @@ RUN multica version || true \
     && rustup toolchain list | grep -q '^esp' \
     && rustup run esp rustc --version \
     && command -v ldproxy > /dev/null \
-    && command -v xtensa-esp32s3-elf-gcc > /dev/null
+    && command -v xtensa-esp-elf-gcc > /dev/null
