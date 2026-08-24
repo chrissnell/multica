@@ -1,4 +1,5 @@
 import { Extension, InputRule } from "@tiptap/core";
+import type { EditorState } from "@tiptap/pm/state";
 
 /**
  * Block-markdown shortcuts after a hard break.
@@ -25,6 +26,7 @@ import { Extension, InputRule } from "@tiptap/core";
  */
 const HARD_BREAK_BLOCKQUOTE = /\n([ \t]{0,3}>[ \t])$/;
 const HARD_BREAK_CODE_FENCE = /\n([ \t]{0,3}(?:```|~~~)([a-z]+)?[ \t])$/;
+const FENCE_LANGUAGE = /(?:```|~~~)([a-z]+)/;
 
 /**
  * Resolve the hard break that precedes the matched marker run. Returns the
@@ -32,10 +34,7 @@ const HARD_BREAK_CODE_FENCE = /\n([ \t]{0,3}(?:```|~~~)([a-z]+)?[ \t])$/;
  * hard break — the `\n` anchor guarantees it is, but this keeps the destructive
  * edit safe if a future inline node ever serializes with a newline.
  */
-function hardBreakBefore(
-  state: import("@tiptap/pm/state").EditorState,
-  from: number,
-): number | null {
+function hardBreakBefore(state: EditorState, from: number): number | null {
   const $from = state.doc.resolve(from);
   if (!$from.parent.isTextblock) return null;
   const before = $from.nodeBefore;
@@ -51,15 +50,14 @@ export function createHardBreakBlockShortcutsExtension() {
         // `> ` on a hard-broken line → blockquote.
         new InputRule({
           find: (text) => {
-            const match = HARD_BREAK_BLOCKQUOTE.exec(text);
-            if (!match) return null;
-            return { index: text.length - match[1].length, text: match[1] };
+            const marker = HARD_BREAK_BLOCKQUOTE.exec(text)?.[1];
+            if (marker === undefined) return null;
+            return { index: text.length - marker.length, text: marker };
           },
           handler: ({ state, range, chain }) => {
             const blockquote = state.schema.nodes.blockquote;
-            if (!blockquote) return null;
             const hardBreakFrom = hardBreakBefore(state, range.from);
-            if (hardBreakFrom === null) return null;
+            if (!blockquote || hardBreakFrom === null) return;
 
             chain()
               .deleteRange({ from: hardBreakFrom, to: range.to })
@@ -71,22 +69,16 @@ export function createHardBreakBlockShortcutsExtension() {
         // ` ``` `/`~~~` (with optional language) on a hard-broken line → code block.
         new InputRule({
           find: (text) => {
-            const match = HARD_BREAK_CODE_FENCE.exec(text);
-            if (!match) return null;
-            return {
-              index: text.length - match[1].length,
-              text: match[1],
-              data: { language: match[2] || null },
-            };
+            const marker = HARD_BREAK_CODE_FENCE.exec(text)?.[1];
+            if (marker === undefined) return null;
+            return { index: text.length - marker.length, text: marker };
           },
           handler: ({ state, range, chain, match }) => {
             const codeBlock = state.schema.nodes.codeBlock;
-            if (!codeBlock) return null;
             const hardBreakFrom = hardBreakBefore(state, range.from);
-            if (hardBreakFrom === null) return null;
+            if (!codeBlock || hardBreakFrom === null) return;
 
-            const language = (match.data as { language?: string | null })
-              ?.language;
+            const language = FENCE_LANGUAGE.exec(match[0] ?? "")?.[1];
             chain()
               .deleteRange({ from: hardBreakFrom, to: range.to })
               .splitBlock()

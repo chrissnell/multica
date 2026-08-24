@@ -31,7 +31,7 @@ function type(editor: Editor, text: string) {
   for (const ch of text) {
     const { from, to } = view.state.selection;
     const handled = view.someProp("handleTextInput", (f) =>
-      f(view, from, to, ch),
+      f(view, from, to, ch, () => editor.view.state.tr),
     );
     if (!handled) view.dispatch(view.state.tr.insertText(ch, from, to));
   }
@@ -49,7 +49,7 @@ describe("blockquote after a hard break", () => {
   it("converts `> ` typed on a hard-broken line into a blockquote", () => {
     editor = makeEditor();
     type(editor, "Intro");
-    editor.commands.setHardBreak();
+    editor.commands.insertContent({ type: "hardBreak" });
     type(editor, "> quoted");
 
     expect(editor.getHTML()).toContain("<blockquote>");
@@ -61,7 +61,7 @@ describe("blockquote after a hard break", () => {
   it("tolerates up to three indent spaces after the hard break", () => {
     editor = makeEditor();
     type(editor, "Intro");
-    editor.commands.setHardBreak();
+    editor.commands.insertContent({ type: "hardBreak" });
     type(editor, "  > quoted");
 
     expect(editor.getHTML()).toContain("<blockquote>");
@@ -95,7 +95,7 @@ describe("blockquote after a hard break", () => {
   it("does not convert an inline `>` on a hard-broken line", () => {
     editor = makeEditor();
     type(editor, "Intro");
-    editor.commands.setHardBreak();
+    editor.commands.insertContent({ type: "hardBreak" });
     type(editor, "a > b ");
 
     expect(editor.getHTML()).not.toContain("<blockquote>");
@@ -104,7 +104,7 @@ describe("blockquote after a hard break", () => {
   it("does not convert at a four-space indent (CommonMark code, not a quote)", () => {
     editor = makeEditor();
     type(editor, "Intro");
-    editor.commands.setHardBreak();
+    editor.commands.insertContent({ type: "hardBreak" });
     type(editor, "    > quoted");
 
     expect(editor.getHTML()).not.toContain("<blockquote>");
@@ -113,7 +113,7 @@ describe("blockquote after a hard break", () => {
   it("nests when `> ` follows a hard break inside an existing blockquote", () => {
     editor = makeEditor();
     type(editor, "> outer");
-    editor.commands.setHardBreak();
+    editor.commands.insertContent({ type: "hardBreak" });
     type(editor, "> inner");
 
     // `>` inside a quote deepens it — a nested blockquote, per markdown.
@@ -133,7 +133,7 @@ describe("code fence after a hard break", () => {
   it("converts ` ``` ` typed on a hard-broken line into a code block", () => {
     editor = makeEditor();
     type(editor, "Intro");
-    editor.commands.setHardBreak();
+    editor.commands.insertContent({ type: "hardBreak" });
     type(editor, "``` ");
 
     expect(editor.getHTML()).toContain("<pre>");
@@ -144,7 +144,7 @@ describe("code fence after a hard break", () => {
   it("keeps the language after ` ```lang `", () => {
     editor = makeEditor();
     type(editor, "Intro");
-    editor.commands.setHardBreak();
+    editor.commands.insertContent({ type: "hardBreak" });
     type(editor, "```js ");
 
     expect(editor.getHTML()).toContain('class="language-js"');
@@ -154,7 +154,7 @@ describe("code fence after a hard break", () => {
   it("supports `~~~` tilde fences too", () => {
     editor = makeEditor();
     type(editor, "Intro");
-    editor.commands.setHardBreak();
+    editor.commands.insertContent({ type: "hardBreak" });
     type(editor, "~~~ ");
 
     expect(editor.getHTML()).toContain("<pre>");
@@ -163,7 +163,7 @@ describe("code fence after a hard break", () => {
   it("lands the caret inside the code block so typed code stays in it", () => {
     editor = makeEditor();
     type(editor, "Intro");
-    editor.commands.setHardBreak();
+    editor.commands.insertContent({ type: "hardBreak" });
     type(editor, "```js ");
     type(editor, "const x = 1");
 
