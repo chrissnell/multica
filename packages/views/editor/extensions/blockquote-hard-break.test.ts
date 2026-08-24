@@ -88,4 +88,41 @@ describe("blockquote after a hard break", () => {
 
     expect(editor.getHTML()).not.toContain("<blockquote>");
   });
+
+  it("does not convert an inline `>` on a hard-broken line", () => {
+    editor = makeEditor();
+    type(editor, "Intro");
+    editor.commands.setHardBreak();
+    type(editor, "a > b ");
+
+    expect(editor.getHTML()).not.toContain("<blockquote>");
+  });
+
+  it("does not convert at a four-space indent (CommonMark code, not a quote)", () => {
+    editor = makeEditor();
+    type(editor, "Intro");
+    editor.commands.setHardBreak();
+    type(editor, "    > quoted");
+
+    expect(editor.getHTML()).not.toContain("<blockquote>");
+  });
+
+  it("nests when `> ` follows a hard break inside an existing blockquote", () => {
+    editor = makeEditor();
+    type(editor, "> outer");
+    editor.commands.setHardBreak();
+    type(editor, "> inner");
+
+    // `>` inside a quote deepens it — a nested blockquote, per markdown.
+    expect(editor.getMarkdown()).toContain("> > inner");
+  });
+
+  it("converts inside a list item", () => {
+    editor = makeEditor();
+    type(editor, "- item ");
+    editor.commands.setHardBreak();
+    type(editor, "> quoted");
+
+    expect(editor.getHTML()).toContain("<blockquote>");
+  });
 });

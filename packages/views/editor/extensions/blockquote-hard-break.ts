@@ -52,10 +52,7 @@ export function createBlockquoteHardBreakExtension() {
             if (!before || before.type.name !== "hardBreak") return null;
 
             chain()
-              .command(({ tr, dispatch }) => {
-                if (dispatch) tr.delete(hardBreakFrom, range.to);
-                return true;
-              })
+              .deleteRange({ from: hardBreakFrom, to: range.to })
               .splitBlock()
               .wrapIn(blockquote)
               .run();
