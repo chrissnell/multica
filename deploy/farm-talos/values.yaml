@@ -6,7 +6,7 @@ image:
   registry: registry.chrissnell.com/multica
   pullSecret: registry-credentials
   pullPolicy: IfNotPresent
-  tag: v0.4.0-mk34
+  tag: v0.4.0-mk35
   tags:
     # PG 17 + pgvector v0.7.4 have been unchanged from mk3 through the current
     # top-level — pure rebuilds — so pin postgres at mk3 to avoid bouncing the
@@ -18,11 +18,11 @@ image:
   # Humans don't edit these — image-release.yml owns the file.
   digests:
     runtimeClaude: "sha256:b54be15075318d7d1a1f89eab28c44067f44b1f6d0c023280d7c4e21b5be4bc9"
-    backend: sha256:0c4437a3fa7df91608ceaf70103da1135f12e14da47924852a43f25a2be3c80b
-    web: sha256:c761ffebff93721f3bbf8467821977f00cb065fbdbacdfe93e0d26f658e92c32
-    controller: sha256:075d42e2e37ab98f4a91cc8db2cc2497e2778cf772290b060cbbb1044aee3e6c
-    claudeBroker: sha256:09d02f538db83cba9ae5027b3e1d1eb6e70b883977842350d2e78ae7d133b489
-    repocache: sha256:3f5b88bc1b71c0fa85b1013426386437c239147ca2704a717df4b7e995c9065d
+    backend: sha256:d22ea83b284f7ca49090844a5fe2bb894bd6190848dab8ff7ba2d29e9b948c5d
+    web: sha256:ad717c19d8683d0d6a34a45664fb8e761a1a8c4fc424abb109dc4a51739a7a2c
+    controller: sha256:057ea8709000894044f0566e85564193a0338515f41e292d578dc19f5c2bcf21
+    claudeBroker: sha256:2d50c0e806893c7d30b585ac6d8a3bc3e49da4b2948a6ec367c70bf01a8584da
+    repocache: sha256:fc6b3283313e9d94bd3cb5c6b066f1c43cb7125711efa9c8ead110f35a360142
 # Public exposure is handled OUT of this chart: a standalone
 # cloudflare-tunnel Ingress (multica-cf-ingress.yaml) puts multica behind the
 # shared Cloudflare Tunnel, gated by a Cloudflare Access One-Time PIN policy.
