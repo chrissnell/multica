@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
+import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { Markdown } from "@tiptap/markdown";
-import { createBlockquoteHardBreakExtension } from "./blockquote-hard-break";
+import { codeLowlight } from "../syntax-highlight";
+import { createHardBreakBlockShortcutsExtension } from "./hard-break-block-shortcuts";
 
 function makeEditor() {
   const element = document.createElement("div");
@@ -11,7 +13,8 @@ function makeEditor() {
     element,
     extensions: [
       StarterKit.configure({ link: false, codeBlock: false }),
-      createBlockquoteHardBreakExtension(),
+      CodeBlockLowlight.configure({ lowlight: codeLowlight }),
+      createHardBreakBlockShortcutsExtension(),
       Markdown.configure({ indentation: { style: "space", size: 3 } }),
     ],
     content: "",
@@ -116,13 +119,68 @@ describe("blockquote after a hard break", () => {
     // `>` inside a quote deepens it — a nested blockquote, per markdown.
     expect(editor.getMarkdown()).toContain("> > inner");
   });
+});
 
-  it("converts inside a list item", () => {
+describe("code fence after a hard break", () => {
+  let editor: Editor | undefined;
+
+  afterEach(() => {
+    editor?.destroy();
+    editor = undefined;
+    document.body.innerHTML = "";
+  });
+
+  it("converts ` ``` ` typed on a hard-broken line into a code block", () => {
     editor = makeEditor();
-    type(editor, "- item ");
+    type(editor, "Intro");
     editor.commands.setHardBreak();
-    type(editor, "> quoted");
+    type(editor, "``` ");
 
-    expect(editor.getHTML()).toContain("<blockquote>");
+    expect(editor.getHTML()).toContain("<pre>");
+    // Serializes as a real fenced block, not an escaped `\`\`\`` paragraph.
+    expect(editor.getMarkdown()).not.toContain("\\`");
+  });
+
+  it("keeps the language after ` ```lang `", () => {
+    editor = makeEditor();
+    type(editor, "Intro");
+    editor.commands.setHardBreak();
+    type(editor, "```js ");
+
+    expect(editor.getHTML()).toContain('class="language-js"');
+    expect(editor.getMarkdown()).toContain("```js");
+  });
+
+  it("supports `~~~` tilde fences too", () => {
+    editor = makeEditor();
+    type(editor, "Intro");
+    editor.commands.setHardBreak();
+    type(editor, "~~~ ");
+
+    expect(editor.getHTML()).toContain("<pre>");
+  });
+
+  it("lands the caret inside the code block so typed code stays in it", () => {
+    editor = makeEditor();
+    type(editor, "Intro");
+    editor.commands.setHardBreak();
+    type(editor, "```js ");
+    type(editor, "const x = 1");
+
+    expect(editor.getMarkdown()).toContain("```js\nconst x = 1\n```");
+  });
+
+  it("still converts ` ``` ` at the start of a block", () => {
+    editor = makeEditor();
+    type(editor, "``` ");
+
+    expect(editor.getHTML()).toContain("<pre>");
+  });
+
+  it("does not convert an inline ` ``` ` mid-line", () => {
+    editor = makeEditor();
+    type(editor, "a ``` b ");
+
+    expect(editor.getHTML()).not.toContain("<pre>");
   });
 });

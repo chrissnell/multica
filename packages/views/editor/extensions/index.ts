@@ -49,7 +49,7 @@ import { CodeBlockView } from "./code-block-view";
 import { PatchedListItem, PatchedTaskItem } from "./list-item";
 import { createMarkdownPasteExtension } from "./markdown-paste";
 import { createMarkdownCopyExtension } from "./markdown-copy";
-import { createBlockquoteHardBreakExtension } from "./blockquote-hard-break";
+import { createHardBreakBlockShortcutsExtension } from "./hard-break-block-shortcuts";
 import { createBlurShortcutExtension } from "./blur-shortcut";
 import { createSubmitShortcutExtension } from "./submit-shortcut";
 import { createFileUploadExtension } from "./file-upload";
@@ -214,10 +214,10 @@ export function createEditorExtensions(
     // `- ` still falls through to PatchedListItem's bullet list.
     TaskList,
     PatchedTaskItem,
-    // `> ` at the start of a hard-broken (Shift+Enter) line becomes a blockquote,
-    // matching StarterKit's block-start rule so quotes work anywhere, not just as
-    // the first block.
-    createBlockquoteHardBreakExtension(),
+    // `> ` and ` ``` `/`~~~` at the start of a hard-broken (Shift+Enter) line
+    // become a blockquote / code block, matching StarterKit's block-start rules
+    // so they work anywhere, not just as the first block.
+    createHardBreakBlockShortcutsExtension(),
     CodeBlockLowlight.extend({
       addNodeView() {
         return ReactNodeViewRenderer(CodeBlockView);
