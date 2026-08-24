@@ -18,8 +18,10 @@ permissions:
 jobs:
   release:
     runs-on: multica-arc-runners
-    # Headroom for a buildkitd-restart retry on the longest builds.
-    timeout-minutes: 45
+    # Headroom for a buildkitd-restart retry on the longest builds. The
+    # runtime image is the long pole; its ESP32 Xtensa toolchain + ESP-IDF
+    # pre-warm add ~15 min on the (infrequent) runtime rebuilds.
+    timeout-minutes: 60
     env:
       HARBOR_HOST: registry.chrissnell.com
       BUILDKIT_ADDR: tcp://buildkitd.multica-ci.svc:1234

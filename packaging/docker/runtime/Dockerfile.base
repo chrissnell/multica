@@ -1,8 +1,9 @@
 # packaging/docker/runtime/Dockerfile.base
 #
 # Shared base for all Multica agent runtime images: the `multica` binary plus
-# full polyglot toolchains (Go, Rust + cargo-ndk, Node/pnpm, JDK/Kotlin,
-# Android SDK + NDK, Python, protobuf/protoc + Go & Rust codegen plugins,
+# full polyglot toolchains (Go, Rust + cargo-ndk, ESP32 Xtensa cross-compile
+# (esp toolchain + ESP-IDF), Node/pnpm, JDK/Kotlin, Android SDK + NDK,
+# Python, protobuf/protoc + Go & Rust codegen plugins,
 # Terraform + a pre-baked Cloudflare provider) and the debuggers/linters agents need at
 # runtime. Per-provider images (Dockerfile.claude, etc.) extend this and
 # add their agent CLI.
@@ -189,6 +190,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       xvfb \
     && rm -rf /var/lib/apt/lists/*
 
+# ── ESP32 (Xtensa) firmware cross-compile build deps ──────────────────
+# Native prerequisites ESP-IDF's CMake/Ninja bootstrap needs when
+# esp-idf-sys builds the firmware (e.g. the blue-aspen-observatory panel).
+# git, cmake, python3-venv/pip, pkg-config, wget, curl and libusb-1.0-0
+# (via libusb-1.0-0-dev) are already provided above; these are the gaps.
+# The Xtensa Rust toolchain + IDF itself are installed as the runtime user
+# further down (they write HOME-relative artifacts).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ninja-build \
+      flex \
+      bison \
+      gperf \
+      ccache \
+      libffi-dev \
+      libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # ── Protobuf compiler (protoc) ────────────────────────────────────────
 # Upstream release binary + the bundled well-known-type .proto files
 # (google/protobuf/*.proto). Extracting the include/ tree to /usr/local
@@ -369,6 +387,47 @@ ENV HOME=/home/multica \
     GOPATH=/home/multica/go \
     PATH=/home/multica/go/bin:/usr/local/cargo/bin:/usr/local/gobin:/usr/local/go/bin:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${PATH}
 
+# ── ESP32 Xtensa cross-compile toolchain (Espressif `esp` Rust + ESP-IDF) ─
+# Cross-compile-only support for ESP32-S3 firmware. Stable rustc can't emit
+# Xtensa, so espup installs Espressif's `esp` Rust toolchain + Xtensa LLVM
+# (and a bundled xtensa-esp-elf GCC); ldproxy is the linker wrapper the
+# xtensa-*-espidf target links through. Both are public downloads.
+#
+# Runs as the `multica` runtime user (not root) on purpose: espup writes
+# ~/export-esp.sh and the pre-warmed ESP-IDF lands in ~/.espressif, both
+# HOME-relative — baking them under /home/multica is where every runtime
+# build looks. The `esp` rustup toolchain itself lands in the shared
+# RUSTUP_HOME (/usr/local/rustup, left a+rwX by the Rust block above), and
+# all agents run as this same user, so no extra chmod is needed.
+#
+# ESP_IDF_TOOLS_INSTALL_DIR=global makes esp-idf-sys/embuild reuse the
+# pre-warmed ~/.espressif instead of a throwaway per-checkout .embuild dir
+# (a plain env var overrides the firmware repo's cargo [env] default).
+#
+# Sourcing ~/export-esp.sh from the shell profiles puts LIBCLANG_PATH
+# (bindgen needs it) and xtensa-esp-elf on PATH for every build shell.
+#
+# The final step best-effort pre-warms the ESP-IDF native toolchain
+# (xtensa-esp-elf GCC + tools) from the PUBLIC esp-idf repo at ESP_IDF_VERSION
+# into ~/.espressif, which embuild reuses at runtime. It deliberately does NOT
+# build the firmware repo: that repo is private and unreachable at image-build
+# time (buildkit gets no GH creds). The step is non-fatal — a fetch hiccup must
+# not break the whole runtime image, and the runtime bootstraps IDF on the
+# first firmware build regardless (network is available there).
+ARG ESP_TARGET=esp32s3
+ARG ESP_IDF_VERSION=v5.5.3
+ENV ESP_IDF_TOOLS_INSTALL_DIR=global
+RUN cargo install espup --locked \
+    && cargo install ldproxy --locked \
+    && espup install --targets "${ESP_TARGET}" --export-file "$HOME/export-esp.sh" \
+    && printf '\n. "$HOME/export-esp.sh"\n' >> "$HOME/.bashrc" \
+    && printf '\n. "$HOME/export-esp.sh"\n' >> "$HOME/.profile" \
+    && ( set -eux; \
+         git clone -b "${ESP_IDF_VERSION}" --depth 1 https://github.com/espressif/esp-idf.git /tmp/esp-idf \
+         && /tmp/esp-idf/install.sh "${ESP_TARGET}" ) \
+       || { echo "WARN: ESP-IDF pre-warm failed; runtime bootstraps IDF on first build" >&2; rm -rf "$HOME/.espressif"; } \
+    && rm -rf /tmp/esp-idf
+
 # Sanity: key tools resolve on PATH for the multica user.
 RUN multica version || true \
     && go version \
@@ -405,4 +464,10 @@ RUN multica version || true \
     && pkg-config --exists fftw3f \
     && pkg-config --exists sndfile \
     && pkg-config --exists samplerate \
-    && pkg-config --exists hamlib
+    && pkg-config --exists hamlib \
+    && test -f "$HOME/export-esp.sh" \
+    && . "$HOME/export-esp.sh" \
+    && rustup toolchain list | grep -q '^esp' \
+    && rustup run esp rustc --version \
+    && command -v ldproxy > /dev/null \
+    && command -v xtensa-esp32s3-elf-gcc > /dev/null
