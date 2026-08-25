@@ -109,7 +109,13 @@ func EnsurePVC(ctx context.Context, k kubernetes.Interface, namespace string, r 
 // repo-cache PVC read-only at rc.MountPath and a per-task gitconfig ConfigMap
 // at /home/multica/.gitconfig whose url.<base>.insteadOf rewrites turn the
 // agent's plain `git clone <origin-url>` into a sub-second local file:// clone.
-func DispatchJob(ctx context.Context, k kubernetes.Interface, namespace string, r Registered, t daemon.Task, imagePullSecret, pvc string, cb ClaudeBrokerOptions, rc RepoCacheOptions, gh GitHubTokenOptions, extraEnv []WorkerSecretEnvVar) (string, error) {
+//
+// When bc.Enabled is true, the Job mounts the shared build-cache PVC
+// read-write at bc.MountPath and sets ccache/sccache env vars so heavy
+// cross-compiles (ESP-IDF C framework + Rust build-std) reuse compiled objects
+// across tasks. Both caches are content-hash keyed, so an IDF/toolchain bump
+// invalidates them automatically.
+func DispatchJob(ctx context.Context, k kubernetes.Interface, namespace string, r Registered, t daemon.Task, imagePullSecret, pvc string, cb ClaudeBrokerOptions, rc RepoCacheOptions, gh GitHubTokenOptions, extraEnv []WorkerSecretEnvVar, bc BuildCacheOptions) (string, error) {
 	payload, err := json.Marshal(t)
 	if err != nil {
 		return "", fmt.Errorf("marshal task: %w", err)
@@ -245,6 +251,39 @@ func DispatchJob(ctx context.Context, k kubernetes.Interface, namespace string, 
 		runtaskEnv = append(runtaskEnv,
 			corev1.EnvVar{Name: "MULTICA_REPOCACHE_DIR", Value: rc.MountPath},
 			corev1.EnvVar{Name: "MULTICA_REPOCACHE_URL", Value: "http://multica-repocache." + namespace + ".svc:8080"},
+		)
+	}
+
+	if bc.Enabled {
+		// Shared, writable build cache mounted read-write (unlike repocache,
+		// which is read-only). Multiple worker pods write concurrently, so the
+		// cache tools must be safe under concurrent shared-storage access:
+		// ccache is designed for shared (incl. NFS) cache dirs, and sccache
+		// serialises writes through atomic renames. Both are content-hash
+		// keyed, so an IDF or toolchain bump lands in a new key and stale
+		// entries age out via each tool's own LRU — no manual invalidation.
+		volumes = append(volumes,
+			corev1.Volume{
+				Name: "build-cache",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: bc.PVCName,
+					},
+				},
+			},
+		)
+		runtaskMounts = append(runtaskMounts,
+			corev1.VolumeMount{Name: "build-cache", MountPath: bc.MountPath},
+		)
+		// ccache for the ESP-IDF C framework; sccache for Rust (build-std +
+		// crates). CARGO_INCREMENTAL=0 because sccache cannot cache incremental
+		// compilation and errors out otherwise.
+		runtaskEnv = append(runtaskEnv,
+			corev1.EnvVar{Name: "CCACHE_DIR", Value: bc.MountPath + "/ccache"},
+			corev1.EnvVar{Name: "IDF_CCACHE_ENABLE", Value: "1"},
+			corev1.EnvVar{Name: "SCCACHE_DIR", Value: bc.MountPath + "/sccache"},
+			corev1.EnvVar{Name: "RUSTC_WRAPPER", Value: "sccache"},
+			corev1.EnvVar{Name: "CARGO_INCREMENTAL", Value: "0"},
 		)
 	}
 

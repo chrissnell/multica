@@ -589,6 +589,99 @@ calls fall back to direct origin URLs over the network. This is a safe
 sanity-check path — if a clone behaves unexpectedly, flip the cache off,
 re-run the task, and compare.
 
+## Build cache (ESP-IDF / heavy cross-compiles)
+
+Some builds are cold-expensive in a way the repo cache can't touch: ESP32
+firmware (`make build` on the `blue-aspen-observatory` panel) is an ESP-IDF
+(std) Rust build that, on a fresh checkout, clones ESP-IDF v5.5.3 **plus all
+its git submodules** and compiles the entire IDF C framework (WiFi, lwIP,
+mbedTLS, FreeRTOS…) on top of a `build-std` rebuild of Rust `std` for Xtensa.
+Measured cold, it was still cloning IDF submodules at 24 minutes. Because
+every checkout is a fresh ephemeral worktree, agent runs paid this every time.
+
+Warming happens at two layers:
+
+### Baked into the runtime image (always on)
+
+`packaging/docker/runtime/Dockerfile.base` (ESP32 block) pre-warms the
+network-bound and download-bound costs so no task pays them:
+
+- **ESP-IDF source tree + submodules** — cloned once at image-build time into a
+  persistent `IDF_PATH=/home/multica/.espressif/esp-idf` (with
+  `--recurse-submodules`) and **kept**. `esp-idf-sys`'s native builder honours
+  `IDF_PATH` ("a user-provided local clone, used instead of the one downloaded
+  by the build script"), so runtime builds reuse it and never re-clone. This
+  removes the dominant 24-minute submodule clone.
+- **Native ESP-IDF tooling** (xtensa-esp-elf GCC + tools + python venv) into
+  `~/.espressif` via `install.sh`, reused because `ESP_IDF_TOOLS_INSTALL_DIR=global`.
+- **Cargo registry** pre-warm of the public `esp-idf-svc` / `esp-idf-hal` /
+  `esp-idf-sys` / `embuild` crates into the shared, baked `CARGO_HOME`
+  (`/usr/local/cargo`). The firmware repo's exact lockfile can't be resolved at
+  image-build time (private repo), so the public crates are fetched instead.
+
+The IDF steps are best-effort (a fetch hiccup must not fail the whole runtime
+image); if they're skipped, the runtime still bootstraps IDF on the first
+firmware build as before. Bump `ESP_IDF_VERSION` / `ESP_RUST_VERSION` via
+`--build-arg` when the firmware's pins move; a runtime rebuild re-warms.
+
+### Shared build cache PVC (opt-in — compiled-object reuse across tasks)
+
+Baking removes clone + download cost, but the *first* build in the cluster
+still compiles the IDF C framework and `build-std` from scratch, and that
+`target/` never survives on the ephemeral per-task workdir PVC. The optional
+build cache fixes cross-task reuse: an RWX PVC mounted **read-write** at
+`/caches` on every worker Job pod, holding two content-addressed compiler
+caches:
+
+| Path | Env vars | Caches |
+|---|---|---|
+| `/caches/ccache` | `CCACHE_DIR`, `IDF_CCACHE_ENABLE=1` | ESP-IDF C framework objects (ccache — designed for shared/NFS caches) |
+| `/caches/sccache` | `SCCACHE_DIR`, `RUSTC_WRAPPER=sccache`, `CARGO_INCREMENTAL=0` | Rust compilation: `build-std` + crates |
+
+Both are keyed by a hash of compiler + flags + inputs, so a **toolchain or IDF
+version bump invalidates them automatically** — no manual cache-key management,
+and stale entries age out via each tool's own LRU. ccache is explicitly
+designed for shared caches (its docs cover NFS-backed `CCACHE_DIR`) and carries
+the largest single compile; sccache writes cache entries via temp-file +
+atomic rename, so concurrent worker pods don't corrupt each other's entries
+(cross-host LRU accounting on NFS is best-effort — size caps are advisory, not
+exact). If a shared-storage class ever misbehaves with sccache, drop
+`RUSTC_WRAPPER` from the env and keep ccache alone — the C framework is the
+dominant cost.
+
+Disabled by default. Enabling sets `RUSTC_WRAPPER=sccache` on **every** worker
+(not just ESP32 tasks — it speeds up all Rust builds), which only works with a
+runtime image that ships `sccache`; enable it together with (or after) the
+matching runtime image.
+
+```yaml
+runtime:
+  controller:
+    buildCache:
+      enabled: true
+      storage:
+        storageClass: synology-nfs-csi    # MUST be RWX-capable
+        size: 50Gi
+```
+
+| Key | Default | Purpose |
+|---|---|---|
+| `runtime.controller.buildCache.enabled` | `false` | Master switch. Off = every task compiles cold. |
+| `runtime.controller.buildCache.pvcName` | `multica-build-cache` | PVC name (chart-created, `helm.sh/resource-policy: keep`). |
+| `runtime.controller.buildCache.mountPath` | `/caches` | Where the PVC mounts on worker pods. |
+| `runtime.controller.buildCache.storage.storageClass` | `""` | **MUST be RWX-capable** (multiple concurrent writers). |
+| `runtime.controller.buildCache.storage.accessMode` | `ReadWriteMany` | |
+| `runtime.controller.buildCache.storage.size` | `50Gi` | Holds ccache + sccache for all cross-compiles. |
+
+Verify a worker sees it:
+
+```bash
+POD=$(kubectl -n multica get pods -l app.kubernetes.io/managed-by=multica-k8s-controller \
+        --field-selector=status.phase=Running -o name | head -1)
+kubectl -n multica exec "$POD" -c runtask -- sh -c 'ls -la /caches && printenv | grep -E "CCACHE|SCCACHE|RUSTC_WRAPPER|IDF_CCACHE"'
+kubectl -n multica exec "$POD" -c runtask -- sccache --show-stats   # cache hits climb across tasks
+```
+
 ## Local token sync (macOS)
 
 `multica-token-sync` is a tiny launchd agent that follows the cluster-side

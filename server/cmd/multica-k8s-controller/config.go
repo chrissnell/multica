@@ -23,6 +23,7 @@ type Config struct {
 	ImagePullSecret string               `yaml:"imagePullSecret"`
 	ClaudeBroker    ClaudeBrokerOptions  `yaml:"claudeBroker"`
 	RepoCache       RepoCacheOptions     `yaml:"repoCache"`
+	BuildCache      BuildCacheOptions    `yaml:"buildCache"`
 	GitHubToken     GitHubTokenOptions   `yaml:"githubToken"`
 	WorkerExtraEnv  []WorkerSecretEnvVar `yaml:"workerExtraEnv"`
 
@@ -75,6 +76,26 @@ type RepoCacheOptions struct {
 	Enabled   bool   `yaml:"enabled"`
 	PVCName   string `yaml:"pvcName"`   // default multica-repocache-repos
 	MountPath string `yaml:"mountPath"` // default /repos
+}
+
+// BuildCacheOptions controls whether worker Job pods mount the cluster-wide
+// build cache — a shared RWX PVC that persists compiler caches across tasks so
+// heavy cross-compiles (notably ESP32 firmware: the ESP-IDF C framework +
+// Rust build-std) don't recompile from scratch every run. When Enabled, the
+// controller mounts PVCName read-write at MountPath and sets the cache env
+// vars on the runtask container:
+//   - CCACHE_DIR + IDF_CCACHE_ENABLE=1 — ccache for the ESP-IDF C framework
+//     (ccache is designed for shared/NFS caches; the largest single compile).
+//   - SCCACHE_DIR + RUSTC_WRAPPER=sccache + CARGO_INCREMENTAL=0 — sccache for
+//     Rust compilation (build-std + crates).
+//
+// Both caches are content-hash keyed, so an IDF or toolchain version bump
+// invalidates them cleanly with no manual key management. Disabled (the
+// default) = each task compiles cold, exactly as before.
+type BuildCacheOptions struct {
+	Enabled   bool   `yaml:"enabled"`
+	PVCName   string `yaml:"pvcName"`   // default multica-build-cache
+	MountPath string `yaml:"mountPath"` // default /caches
 }
 
 // GitHubTokenOptions controls cluster-wide GitHub PAT injection into worker
@@ -175,6 +196,16 @@ func LoadConfig() (*Config, error) {
 		}
 		if cfg.RepoCache.MountPath == "" {
 			cfg.RepoCache.MountPath = "/repos"
+		}
+	}
+
+	// BuildCache defaults — only meaningful when Enabled.
+	if cfg.BuildCache.Enabled {
+		if cfg.BuildCache.PVCName == "" {
+			cfg.BuildCache.PVCName = "multica-build-cache"
+		}
+		if cfg.BuildCache.MountPath == "" {
+			cfg.BuildCache.MountPath = "/caches"
 		}
 	}
 

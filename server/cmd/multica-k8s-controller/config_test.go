@@ -111,6 +111,67 @@ workspaces:
 	}
 }
 
+func TestLoadConfig_BuildCacheDefaults(t *testing.T) {
+	cfgDir := t.TempDir()
+	cfgYAML := []byte(`
+workspaces:
+  - id: 11111111-1111-1111-1111-111111111111
+    provider: claude
+    runtimeImage: ghcr.io/x/multica-runtime-claude:dev
+buildCache:
+  enabled: true
+`)
+	if err := os.WriteFile(filepath.Join(cfgDir, "runtime.yaml"), cfgYAML, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MULTICA_SERVER_URL", "http://x")
+	t.Setenv("MULTICA_TOKEN", "tk")
+	t.Setenv("POD_NAMESPACE", "multica")
+	t.Setenv("CONTROLLER_CONFIG_DIR", cfgDir)
+
+	got, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !got.BuildCache.Enabled {
+		t.Errorf("BuildCache.Enabled = false")
+	}
+	if got.BuildCache.PVCName != "multica-build-cache" {
+		t.Errorf("BuildCache.PVCName default = %q", got.BuildCache.PVCName)
+	}
+	if got.BuildCache.MountPath != "/caches" {
+		t.Errorf("BuildCache.MountPath default = %q", got.BuildCache.MountPath)
+	}
+}
+
+func TestLoadConfig_BuildCacheDisabledLeavesFieldsZero(t *testing.T) {
+	cfgDir := t.TempDir()
+	cfgYAML := []byte(`
+workspaces:
+  - id: 11111111-1111-1111-1111-111111111111
+    provider: claude
+    runtimeImage: ghcr.io/x/multica-runtime-claude:dev
+`)
+	if err := os.WriteFile(filepath.Join(cfgDir, "runtime.yaml"), cfgYAML, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MULTICA_SERVER_URL", "http://x")
+	t.Setenv("MULTICA_TOKEN", "tk")
+	t.Setenv("POD_NAMESPACE", "multica")
+	t.Setenv("CONTROLLER_CONFIG_DIR", cfgDir)
+
+	got, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got.BuildCache.Enabled {
+		t.Errorf("BuildCache.Enabled should be false")
+	}
+	if got.BuildCache.PVCName != "" {
+		t.Errorf("BuildCache.PVCName should be empty when disabled")
+	}
+}
+
 func TestLoadConfig_WorkerExtraEnv(t *testing.T) {
 	cfgDir := t.TempDir()
 	cfgYAML := []byte(`
