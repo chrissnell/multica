@@ -37,6 +37,21 @@ function type(editor: Editor, text: string) {
   }
 }
 
+/**
+ * Drive the ProseMirror `handleKeyDown` chain for Enter, mirroring the pattern in
+ * submit-shortcut.test. `editor.commands.keyboardShortcut("Enter")` simulates the
+ * shortcut and swallows a handler's own dispatch, so it can't drive this.
+ */
+function pressEnter(editor: Editor): boolean {
+  const event = new KeyboardEvent("keydown", { key: "Enter", code: "Enter" });
+  let handled = false;
+  editor.view.someProp("handleKeyDown", (handler) => {
+    handled = handler(editor.view, event) || false;
+    return handled;
+  });
+  return handled;
+}
+
 describe("blockquote after a hard break", () => {
   let editor: Editor | undefined;
 
@@ -182,5 +197,72 @@ describe("code fence after a hard break", () => {
     type(editor, "a ``` b ");
 
     expect(editor.getHTML()).not.toContain("<pre>");
+  });
+});
+
+describe("opening a code fence with Enter", () => {
+  let editor: Editor | undefined;
+
+  afterEach(() => {
+    editor?.destroy();
+    editor = undefined;
+    document.body.innerHTML = "";
+  });
+
+  it("turns a whole ` ``` ` block into a code block on Enter", () => {
+    editor = makeEditor();
+    type(editor, "```");
+    pressEnter(editor);
+
+    expect(editor.getHTML()).toContain("<pre>");
+  });
+
+  it("keeps the language from ` ```lang ` on Enter", () => {
+    editor = makeEditor();
+    type(editor, "```js");
+    pressEnter(editor);
+
+    expect(editor.getHTML()).toContain('class="language-js"');
+  });
+
+  it("opens a tilde fence on Enter", () => {
+    editor = makeEditor();
+    type(editor, "~~~");
+    pressEnter(editor);
+
+    expect(editor.getHTML()).toContain("<pre>");
+  });
+
+  it("opens a fence typed on a hard-broken line and Enter (the reported case)", () => {
+    editor = makeEditor();
+    type(editor, "here is an example");
+    editor.commands.insertContent({ type: "hardBreak" });
+    type(editor, "```");
+    pressEnter(editor);
+    type(editor, "this appears in code");
+
+    // A real fenced block after the intro, not an escaped `\`\`\`` paragraph.
+    expect(editor.getMarkdown()).toContain("```\nthis appears in code\n```");
+    expect(editor.getMarkdown()).not.toContain("\\`");
+  });
+
+  it("lands the caret inside the code block on Enter", () => {
+    editor = makeEditor();
+    type(editor, "intro");
+    editor.commands.insertContent({ type: "hardBreak" });
+    type(editor, "```py");
+    pressEnter(editor);
+    type(editor, "x = 1");
+
+    expect(editor.getMarkdown()).toContain("```py\nx = 1\n```");
+  });
+
+  it("leaves a normal (non-fence) Enter alone", () => {
+    editor = makeEditor();
+    type(editor, "hello");
+    pressEnter(editor);
+
+    expect(editor.getHTML()).not.toContain("<pre>");
+    expect(editor.state.doc.childCount).toBe(2);
   });
 });
