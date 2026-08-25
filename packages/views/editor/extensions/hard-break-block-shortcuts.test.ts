@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { Editor } from "@tiptap/core";
+import { Editor, Extension, Node, type AnyExtension } from "@tiptap/core";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { Markdown } from "@tiptap/markdown";
 import { codeLowlight } from "../syntax-highlight";
 import { createHardBreakBlockShortcutsExtension } from "./hard-break-block-shortcuts";
 
-function makeEditor() {
+function makeEditor(extra: AnyExtension[] = []) {
   const element = document.createElement("div");
   document.body.appendChild(element);
   return new Editor({
@@ -16,9 +17,33 @@ function makeEditor() {
       CodeBlockLowlight.configure({ lowlight: codeLowlight }),
       createHardBreakBlockShortcutsExtension(),
       Markdown.configure({ indentation: { style: "space", size: 3 } }),
+      ...extra,
     ],
     content: "",
   });
+}
+
+/** A minimal inline atom, standing in for a mention, to prove the Enter handler
+ * never treats an inline leaf as a line break or sweeps it into its delete. */
+const AtomNode = Node.create({
+  name: "atom",
+  group: "inline",
+  inline: true,
+  atom: true,
+  parseHTML() {
+    return [{ tag: "span[data-atom]" }];
+  },
+  renderHTML() {
+    return ["span", { "data-atom": "" }, "@x"];
+  },
+});
+
+function hasAtom(editor: Editor): boolean {
+  let found = false;
+  editor.state.doc.descendants((node) => {
+    if (node.type.name === "atom") found = true;
+  });
+  return found;
 }
 
 /**
@@ -35,6 +60,21 @@ function type(editor: Editor, text: string) {
     );
     if (!handled) view.dispatch(view.state.tr.insertText(ch, from, to));
   }
+}
+
+/**
+ * Drive the ProseMirror `handleKeyDown` chain for Enter, mirroring the pattern in
+ * submit-shortcut.test. `editor.commands.keyboardShortcut("Enter")` simulates the
+ * shortcut and swallows a handler's own dispatch, so it can't drive this.
+ */
+function pressEnter(editor: Editor): boolean {
+  const event = new KeyboardEvent("keydown", { key: "Enter", code: "Enter" });
+  let handled = false;
+  editor.view.someProp("handleKeyDown", (handler) => {
+    handled = handler(editor.view, event) || false;
+    return handled;
+  });
+  return handled;
 }
 
 describe("blockquote after a hard break", () => {
@@ -182,5 +222,181 @@ describe("code fence after a hard break", () => {
     type(editor, "a ``` b ");
 
     expect(editor.getHTML()).not.toContain("<pre>");
+  });
+});
+
+describe("opening a code fence with Enter", () => {
+  let editor: Editor | undefined;
+
+  afterEach(() => {
+    editor?.destroy();
+    editor = undefined;
+    document.body.innerHTML = "";
+  });
+
+  it("turns a whole ` ``` ` block into a code block on Enter", () => {
+    editor = makeEditor();
+    type(editor, "```");
+    pressEnter(editor);
+
+    expect(editor.getHTML()).toContain("<pre>");
+  });
+
+  it("keeps the language from ` ```lang ` on Enter", () => {
+    editor = makeEditor();
+    type(editor, "```js");
+    pressEnter(editor);
+
+    expect(editor.getHTML()).toContain('class="language-js"');
+  });
+
+  it("opens a tilde fence on Enter", () => {
+    editor = makeEditor();
+    type(editor, "~~~");
+    pressEnter(editor);
+
+    expect(editor.getHTML()).toContain("<pre>");
+  });
+
+  it("opens a fence typed on a hard-broken line and Enter (the reported case)", () => {
+    editor = makeEditor();
+    type(editor, "here is an example");
+    editor.commands.insertContent({ type: "hardBreak" });
+    type(editor, "```");
+    pressEnter(editor);
+    type(editor, "this appears in code");
+
+    // A real fenced block after the intro, not an escaped `\`\`\`` paragraph.
+    expect(editor.getMarkdown()).toContain("```\nthis appears in code\n```");
+    expect(editor.getMarkdown()).not.toContain("\\`");
+  });
+
+  it("lands the caret inside the code block on Enter", () => {
+    editor = makeEditor();
+    type(editor, "intro");
+    editor.commands.insertContent({ type: "hardBreak" });
+    type(editor, "```py");
+    pressEnter(editor);
+    type(editor, "x = 1");
+
+    expect(editor.getMarkdown()).toContain("```py\nx = 1\n```");
+  });
+
+  it("leaves a normal (non-fence) Enter alone", () => {
+    editor = makeEditor();
+    type(editor, "hello");
+    pressEnter(editor);
+
+    expect(editor.getHTML()).not.toContain("<pre>");
+    expect(editor.state.doc.childCount).toBe(2);
+  });
+});
+
+describe("code fence Enter does not corrupt adjacent inline content", () => {
+  let editor: Editor | undefined;
+
+  afterEach(() => {
+    editor?.destroy();
+    editor = undefined;
+    document.body.innerHTML = "";
+  });
+
+  it("ignores ` ``` ` sharing a line with an inline atom (no hard break)", () => {
+    editor = makeEditor([AtomNode]);
+    editor.commands.setContent({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "hi" },
+            { type: "atom" },
+            { type: "text", text: "```" },
+          ],
+        },
+      ],
+    });
+    editor.commands.setTextSelection(editor.state.doc.content.size);
+    pressEnter(editor);
+
+    // The `` ``` `` is not alone on its visual line, so no conversion — and the
+    // atom must survive (it is not a hard break and must not be deleted).
+    expect(editor.getHTML()).not.toContain("<pre>");
+    expect(hasAtom(editor)).toBe(true);
+  });
+
+  it("keeps an inline atom that precedes ` ``` ` on a hard-broken line", () => {
+    editor = makeEditor([AtomNode]);
+    editor.commands.setContent({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "hi" },
+            { type: "hardBreak" },
+            { type: "atom" },
+            { type: "text", text: "```" },
+          ],
+        },
+      ],
+    });
+    editor.commands.setTextSelection(editor.state.doc.content.size);
+    pressEnter(editor);
+
+    expect(editor.getHTML()).not.toContain("<pre>");
+    expect(hasAtom(editor)).toBe(true);
+  });
+});
+
+describe("code fence Enter priority", () => {
+  let editor: Editor | undefined;
+  let submitFired = false;
+
+  // Stand-in for the submit shortcut (priority 100): consumes a plain Enter.
+  const fakeSubmit = Extension.create({
+    name: "fakeSubmit",
+    priority: 100,
+    addProseMirrorPlugins() {
+      return [
+        new Plugin({
+          key: new PluginKey("fakeSubmit"),
+          props: {
+            handleKeyDown(_view, event) {
+              if (event.key === "Enter" && !event.shiftKey) {
+                submitFired = true;
+                return true;
+              }
+              return false;
+            },
+          },
+        }),
+      ];
+    },
+  });
+
+  afterEach(() => {
+    editor?.destroy();
+    editor = undefined;
+    submitFired = false;
+    document.body.innerHTML = "";
+  });
+
+  it("opens the fence before submit fires on a bare fence line", () => {
+    editor = makeEditor([fakeSubmit]);
+    type(editor, "```");
+    pressEnter(editor);
+
+    expect(editor.getHTML()).toContain("<pre>");
+    expect(submitFired).toBe(false);
+  });
+
+  it("yields to submit on a normal (non-fence) line", () => {
+    editor = makeEditor([fakeSubmit]);
+    type(editor, "hello");
+    pressEnter(editor);
+
+    expect(editor.getHTML()).not.toContain("<pre>");
+    expect(submitFired).toBe(true);
   });
 });

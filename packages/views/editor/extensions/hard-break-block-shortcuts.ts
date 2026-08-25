@@ -1,32 +1,46 @@
 import { Extension, InputRule } from "@tiptap/core";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { EditorState } from "@tiptap/pm/state";
 
 /**
- * Block-markdown shortcuts after a hard break.
+ * Block-markdown shortcuts that only fire at a block start, made to work on any
+ * line and on the Enter key.
  *
- * StarterKit's blockquote / code-block input rules only fire at the START of a
- * text block (their regexes are anchored with `^`). A hard break (Shift+Enter)
- * is a soft line break WITHIN a paragraph, not a new block, so `> ` or ` ``` `
- * typed on such a line stays literal text: the quote/fence markers are then
- * escaped on serialize and never render. In a composer where Enter sends (issue
- * comments, chat), every line after the first is a hard break, so the visible
- * symptom is "blockquotes / code blocks only work on the first line".
+ * StarterKit's blockquote / code-block input rules are anchored with `^`, so
+ * they only fire at the START of a text block, and the code-block rule only
+ * fires on a trailing space (` ``` `). Two things fall through the cracks:
  *
- * These rules add the missing case: `> ` and ` ``` `/`~~~` (with an optional
- * language) at the start of a hard-broken line split the block and apply the
- * matching node, exactly as they would at a block start. The block-start rules
- * StarterKit already owns are untouched.
+ * 1. After a hard break (Shift+Enter) the `> ` / ` ``` ` markers sit inside a
+ *    paragraph, not at a block start, so they stay literal text and are escaped
+ *    on serialize (`&gt;`, `` \` ``) — the quote/fence never renders. In a
+ *    composer where Enter sends (issue comments, chat) every line past the first
+ *    is a hard break, so the visible symptom is "only the first line works".
  *
- * A hard break renders as `\n` in the input-rule text buffer (its `toText`),
- * and `\n` cannot otherwise appear inside a single paragraph, so the leading
- * `\n` uniquely identifies the soft-break case. The match text is only the
- * marker run (never the `\n`), so `range` spans just that run and the hard break
- * sits one position before `range.from`. Up to three leading spaces are allowed,
- * matching CommonMark's indent tolerance for both constructs.
+ * 2. A code fence is normally opened by typing ` ``` ` and pressing Enter, not by
+ *    typing a trailing space. Enter is a keystroke, not text input, so the input
+ *    rule never sees it and the fence stays literal.
+ *
+ * This extension closes both gaps:
+ *   - input rules that convert `> ` and ` ``` `/`~~~` (optional language) on a
+ *     hard-broken line, mirroring the block-start rules; and
+ *   - an Enter handler that turns a line consisting solely of ` ``` `/`~~~` into
+ *     a code block, whether it is a whole block or a hard-broken line.
+ *
+ * A hard break renders as `\n` in the input-rule text buffer (its `toText`), and
+ * `\n` cannot otherwise appear inside a single paragraph, so the leading `\n`
+ * uniquely identifies the soft-break case. The matched text is only the marker
+ * run (never the `\n`), so `range` spans just that run and the hard break sits
+ * one position before `range.from`. Up to three leading spaces are tolerated,
+ * matching CommonMark's indent tolerance.
+ *
+ * The extension runs at a raised priority so its Enter handler fires before the
+ * submit / default-split keymaps: a bare fence line becomes a code block instead
+ * of sending the comment or splitting the paragraph.
  */
 const HARD_BREAK_BLOCKQUOTE = /\n([ \t]{0,3}>[ \t])$/;
 const HARD_BREAK_CODE_FENCE = /\n([ \t]{0,3}(?:```|~~~)([a-z]+)?[ \t])$/;
 const FENCE_LANGUAGE = /(?:```|~~~)([a-z]+)/;
+const BARE_FENCE_LINE = /^[ \t]{0,3}(?:```|~~~)([a-z]*)$/;
 
 /**
  * Resolve the hard break that precedes the matched marker run. Returns the
@@ -45,6 +59,9 @@ function hardBreakBefore(state: EditorState, from: number): number | null {
 export function createHardBreakBlockShortcutsExtension() {
   return Extension.create({
     name: "hardBreakBlockShortcuts",
+    // Above the submit (100) and default-split keymaps so the Enter handler wins
+    // on a bare fence line; it is a no-op on every other line.
+    priority: 120,
     addInputRules() {
       return [
         // `> ` on a hard-broken line → blockquote.
@@ -66,7 +83,8 @@ export function createHardBreakBlockShortcutsExtension() {
               .run();
           },
         }),
-        // ` ``` `/`~~~` (with optional language) on a hard-broken line → code block.
+        // ` ``` `/`~~~` (with optional language) followed by a space on a
+        // hard-broken line → code block.
         new InputRule({
           find: (text) => {
             const marker = HARD_BREAK_CODE_FENCE.exec(text)?.[1];
@@ -84,6 +102,74 @@ export function createHardBreakBlockShortcutsExtension() {
               .splitBlock()
               .setNode(codeBlock, language ? { language } : {})
               .run();
+          },
+        }),
+      ];
+    },
+    addProseMirrorPlugins() {
+      const { editor } = this;
+      return [
+        new Plugin({
+          key: new PluginKey("codeFenceEnter"),
+          props: {
+            // Enter on a line that is only ` ``` `/`~~~` opens a code block — the
+            // way fences are actually authored, not the trailing-space input rule.
+            handleKeyDown(view, event) {
+              if (
+                event.key !== "Enter" ||
+                event.shiftKey ||
+                event.altKey ||
+                event.metaKey ||
+                event.ctrlKey ||
+                event.isComposing ||
+                view.composing
+              ) {
+                return false;
+              }
+
+              const { state } = view;
+              const { selection } = state;
+              if (!selection.empty) return false;
+
+              const { $from } = selection;
+              const parent = $from.parent;
+              // Skip inside an existing code block — Enter there is a newline.
+              if (!parent.isTextblock || parent.type.spec.code) return false;
+
+              const codeBlock = state.schema.nodes.codeBlock;
+              if (!codeBlock) return false;
+
+              // Current visual line: text after the last hard break up to the
+              // cursor. Only hard breaks count as line breaks — every other
+              // inline leaf (mention, inline math) maps to a placeholder so it
+              // can neither look like a break nor be swept into the delete range.
+              // Both placeholders are one char, so offsets stay 1:1 with document
+              // positions.
+              const before = parent.textBetween(0, $from.parentOffset, undefined, (leaf) =>
+                leaf.type.name === "hardBreak" ? "\n" : "￼",
+              );
+              const lastBreak = before.lastIndexOf("\n");
+              const match = BARE_FENCE_LINE.exec(before.slice(lastBreak + 1));
+              if (!match) return false;
+
+              const language = match[1] || null;
+              const attrs = language ? { language } : {};
+              const lineStart = $from.start() + lastBreak + 1;
+              // Drop the fence run, plus the preceding hard break when the fence
+              // is a continuation line rather than a whole block. Re-confirm the
+              // node before the line really is a hard break before deleting it.
+              let from = lineStart;
+              if (lastBreak !== -1) {
+                const hardBreakFrom = hardBreakBefore(state, lineStart);
+                if (hardBreakFrom === null) return false;
+                from = hardBreakFrom;
+              }
+              const chain = editor.chain().deleteRange({ from, to: $from.pos });
+              (lastBreak === -1 ? chain : chain.splitBlock())
+                .setNode(codeBlock, attrs)
+                .run();
+              return true;
+            },
           },
         }),
       ];
