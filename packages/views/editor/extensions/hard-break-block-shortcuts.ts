@@ -120,7 +120,9 @@ export function createHardBreakBlockShortcutsExtension() {
                 event.shiftKey ||
                 event.altKey ||
                 event.metaKey ||
-                event.ctrlKey
+                event.ctrlKey ||
+                event.isComposing ||
+                view.composing
               ) {
                 return false;
               }
@@ -137,9 +139,15 @@ export function createHardBreakBlockShortcutsExtension() {
               const codeBlock = state.schema.nodes.codeBlock;
               if (!codeBlock) return false;
 
-              // Current visual line: text after the last hard break (rendered as
-              // `\n`) up to the cursor. Offsets stay 1:1 with document positions.
-              const before = parent.textBetween(0, $from.parentOffset, undefined, "\n");
+              // Current visual line: text after the last hard break up to the
+              // cursor. Only hard breaks count as line breaks — every other
+              // inline leaf (mention, inline math) maps to a placeholder so it
+              // can neither look like a break nor be swept into the delete range.
+              // Both placeholders are one char, so offsets stay 1:1 with document
+              // positions.
+              const before = parent.textBetween(0, $from.parentOffset, undefined, (leaf) =>
+                leaf.type.name === "hardBreak" ? "\n" : "￼",
+              );
               const lastBreak = before.lastIndexOf("\n");
               const match = BARE_FENCE_LINE.exec(before.slice(lastBreak + 1));
               if (!match) return false;
@@ -148,8 +156,14 @@ export function createHardBreakBlockShortcutsExtension() {
               const attrs = language ? { language } : {};
               const lineStart = $from.start() + lastBreak + 1;
               // Drop the fence run, plus the preceding hard break when the fence
-              // is a continuation line rather than a whole block.
-              const from = lastBreak === -1 ? lineStart : lineStart - 1;
+              // is a continuation line rather than a whole block. Re-confirm the
+              // node before the line really is a hard break before deleting it.
+              let from = lineStart;
+              if (lastBreak !== -1) {
+                const hardBreakFrom = hardBreakBefore(state, lineStart);
+                if (hardBreakFrom === null) return false;
+                from = hardBreakFrom;
+              }
               const chain = editor.chain().deleteRange({ from, to: $from.pos });
               (lastBreak === -1 ? chain : chain.splitBlock())
                 .setNode(codeBlock, attrs)

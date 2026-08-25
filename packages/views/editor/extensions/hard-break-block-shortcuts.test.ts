@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { Editor } from "@tiptap/core";
+import { Editor, Extension, Node, type AnyExtension } from "@tiptap/core";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { Markdown } from "@tiptap/markdown";
 import { codeLowlight } from "../syntax-highlight";
 import { createHardBreakBlockShortcutsExtension } from "./hard-break-block-shortcuts";
 
-function makeEditor() {
+function makeEditor(extra: AnyExtension[] = []) {
   const element = document.createElement("div");
   document.body.appendChild(element);
   return new Editor({
@@ -16,9 +17,33 @@ function makeEditor() {
       CodeBlockLowlight.configure({ lowlight: codeLowlight }),
       createHardBreakBlockShortcutsExtension(),
       Markdown.configure({ indentation: { style: "space", size: 3 } }),
+      ...extra,
     ],
     content: "",
   });
+}
+
+/** A minimal inline atom, standing in for a mention, to prove the Enter handler
+ * never treats an inline leaf as a line break or sweeps it into its delete. */
+const AtomNode = Node.create({
+  name: "atom",
+  group: "inline",
+  inline: true,
+  atom: true,
+  parseHTML() {
+    return [{ tag: "span[data-atom]" }];
+  },
+  renderHTML() {
+    return ["span", { "data-atom": "" }, "@x"];
+  },
+});
+
+function hasAtom(editor: Editor): boolean {
+  let found = false;
+  editor.state.doc.descendants((node) => {
+    if (node.type.name === "atom") found = true;
+  });
+  return found;
 }
 
 /**
@@ -264,5 +289,114 @@ describe("opening a code fence with Enter", () => {
 
     expect(editor.getHTML()).not.toContain("<pre>");
     expect(editor.state.doc.childCount).toBe(2);
+  });
+});
+
+describe("code fence Enter does not corrupt adjacent inline content", () => {
+  let editor: Editor | undefined;
+
+  afterEach(() => {
+    editor?.destroy();
+    editor = undefined;
+    document.body.innerHTML = "";
+  });
+
+  it("ignores ` ``` ` sharing a line with an inline atom (no hard break)", () => {
+    editor = makeEditor([AtomNode]);
+    editor.commands.setContent({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "hi" },
+            { type: "atom" },
+            { type: "text", text: "```" },
+          ],
+        },
+      ],
+    });
+    editor.commands.setTextSelection(editor.state.doc.content.size);
+    pressEnter(editor);
+
+    // The `` ``` `` is not alone on its visual line, so no conversion — and the
+    // atom must survive (it is not a hard break and must not be deleted).
+    expect(editor.getHTML()).not.toContain("<pre>");
+    expect(hasAtom(editor)).toBe(true);
+  });
+
+  it("keeps an inline atom that precedes ` ``` ` on a hard-broken line", () => {
+    editor = makeEditor([AtomNode]);
+    editor.commands.setContent({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "hi" },
+            { type: "hardBreak" },
+            { type: "atom" },
+            { type: "text", text: "```" },
+          ],
+        },
+      ],
+    });
+    editor.commands.setTextSelection(editor.state.doc.content.size);
+    pressEnter(editor);
+
+    expect(editor.getHTML()).not.toContain("<pre>");
+    expect(hasAtom(editor)).toBe(true);
+  });
+});
+
+describe("code fence Enter priority", () => {
+  let editor: Editor | undefined;
+  let submitFired = false;
+
+  // Stand-in for the submit shortcut (priority 100): consumes a plain Enter.
+  const fakeSubmit = Extension.create({
+    name: "fakeSubmit",
+    priority: 100,
+    addProseMirrorPlugins() {
+      return [
+        new Plugin({
+          key: new PluginKey("fakeSubmit"),
+          props: {
+            handleKeyDown(_view, event) {
+              if (event.key === "Enter" && !event.shiftKey) {
+                submitFired = true;
+                return true;
+              }
+              return false;
+            },
+          },
+        }),
+      ];
+    },
+  });
+
+  afterEach(() => {
+    editor?.destroy();
+    editor = undefined;
+    submitFired = false;
+    document.body.innerHTML = "";
+  });
+
+  it("opens the fence before submit fires on a bare fence line", () => {
+    editor = makeEditor([fakeSubmit]);
+    type(editor, "```");
+    pressEnter(editor);
+
+    expect(editor.getHTML()).toContain("<pre>");
+    expect(submitFired).toBe(false);
+  });
+
+  it("yields to submit on a normal (non-fence) line", () => {
+    editor = makeEditor([fakeSubmit]);
+    type(editor, "hello");
+    pressEnter(editor);
+
+    expect(editor.getHTML()).not.toContain("<pre>");
+    expect(submitFired).toBe(true);
   });
 });
