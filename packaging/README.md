@@ -622,7 +622,9 @@ network-bound and download-bound costs so no task pays them:
 The IDF steps are best-effort (a fetch hiccup must not fail the whole runtime
 image); if they're skipped, the runtime still bootstraps IDF on the first
 firmware build as before. Bump `ESP_IDF_VERSION` / `ESP_RUST_VERSION` via
-`--build-arg` when the firmware's pins move; a runtime rebuild re-warms.
+`--build-arg` when the firmware's pins move (and `ESP_IDF_PATH` if you want the
+baked tree somewhere other than `~/.espressif/esp-idf`); a runtime rebuild
+re-warms.
 
 ### Shared build cache PVC (opt-in — compiled-object reuse across tasks)
 
@@ -651,8 +653,12 @@ dominant cost.
 
 Disabled by default. Enabling sets `RUSTC_WRAPPER=sccache` on **every** worker
 (not just ESP32 tasks — it speeds up all Rust builds), which only works with a
-runtime image that ships `sccache`; enable it together with (or after) the
-matching runtime image.
+runtime image that ships `sccache`.
+
+> **⚠️ Roll the runtime image first.** If you flip `buildCache.enabled: true`
+> before the sccache-bearing runtime image is deployed, every worker's `rustc`
+> execs a missing `sccache` and **all cargo builds fail cluster-wide**, not just
+> ESP32 ones. Deploy the new runtime image, then enable the cache.
 
 ```yaml
 runtime:

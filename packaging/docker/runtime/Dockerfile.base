@@ -474,7 +474,7 @@ RUN ( set -eux; \
       git clone -b "${ESP_IDF_VERSION}" --depth 1 --recurse-submodules --shallow-submodules \
         https://github.com/espressif/esp-idf.git "${ESP_IDF_PATH}" \
       && "${ESP_IDF_PATH}/install.sh" "${ESP_TARGET}" \
-      && printf '\nexport IDF_PATH=%s\n' "${ESP_IDF_PATH}" >> "$HOME/export-esp.sh" ) \
+      && printf '\nexport IDF_PATH="%s"\n' "${ESP_IDF_PATH}" >> "$HOME/export-esp.sh" ) \
       || { echo "WARN: ESP-IDF pre-warm failed; runtime bootstraps IDF on first build" >&2; rm -rf "${ESP_IDF_PATH}" "$HOME/.espressif"; }
 # Cargo registry pre-warm: fetch the public esp-idf-* crates + embuild so the
 # registry index and crate sources are baked into the shared CARGO_HOME. Uses a
