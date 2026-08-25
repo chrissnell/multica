@@ -44,6 +44,18 @@ without K8S access" path.
       pvcName: multica-repocache-repos
       mountPath: /repos
     {{- end }}
+    {{- if .Values.runtime.controller.buildCache.enabled }}
+    # When the build cache is enabled, the controller mounts the shared RWX PVC
+    # read-write at mountPath on every worker Job pod and sets ccache/sccache
+    # env vars so heavy cross-compiles (ESP-IDF C framework + Rust build-std)
+    # reuse compiled objects across tasks. Content-hash keyed, so an IDF or
+    # toolchain bump invalidates cleanly. Requires a runtime image that ships
+    # sccache. Disabled = each task compiles cold.
+    buildCache:
+      enabled: true
+      pvcName: {{ .Values.runtime.controller.buildCache.pvcName | quote }}
+      mountPath: {{ .Values.runtime.controller.buildCache.mountPath | quote }}
+    {{- end }}
     {{- if .Values.runtime.githubTokenSecretName }}
     # Cluster-wide GitHub PAT for the `gh` CLI baked into the runtime image.
     # Optional — when unset, no GH_TOKEN env var is added to worker pods and
