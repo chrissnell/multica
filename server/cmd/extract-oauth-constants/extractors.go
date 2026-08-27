@@ -82,15 +82,25 @@ func endpointExtractor() Extractor {
 }
 
 func versionHeaderExtractor() Extractor {
-	re := regexp.MustCompile(`^oauth-20\d{2}-\d{2}-\d{2}$`)
+	// The anthropic-version OAuth header (oauth-YYYY-MM-DD) lives in claude's
+	// bundled string pool. We can't require it to be an isolated string hit:
+	// Bun frames each pooled string with a length prefix and no trailing NUL,
+	// so when the *following* entry's length byte is printable the scanner
+	// glues it onto the header. Claude 2.1.247 reordered the pool to place a
+	// 51-byte URL right after this header, whose length prefix (0x33 = '3')
+	// turned the hit into "oauth-2025-04-203" and broke the old ^...$ matcher.
+	// Match the date pattern as a substring and canonicalise to the header
+	// value; a trailing pool byte is dropped because \d{2} consumes exactly
+	// two digits.
+	re := regexp.MustCompile(`oauth-20\d{2}-\d{2}-\d{2}`)
 	return Extractor{
 		Name: "version_header",
-		Doc:  "anthropic-version header value matching ^oauth-YYYY-MM-DD$",
+		Doc:  "anthropic-version header value matching oauth-YYYY-MM-DD",
 		Run: func(hits []StringHit) (string, error) {
 			set := map[string]struct{}{}
 			for _, h := range hits {
-				if re.MatchString(h.Value) {
-					set[h.Value] = struct{}{}
+				for _, m := range re.FindAllString(h.Value, -1) {
+					set[m] = struct{}{}
 				}
 			}
 			keys := sortedKeys(set)

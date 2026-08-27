@@ -49,6 +49,28 @@ func TestVersionHeaderExtractor(t *testing.T) {
 			want: "oauth-2025-04-20",
 		},
 		{
+			// claude 2.1.247: Bun's string pool put a 51-byte URL right after
+			// the header, and that entry's printable length prefix (0x33='3')
+			// got glued onto the header by the scanner. The trailing byte must
+			// be tolerated.
+			name: "trailing pool byte glued onto header",
+			hits: []StringHit{
+				{Offset: 100, Value: "oauth-2025-04-203"},
+			},
+			want: "oauth-2025-04-20",
+		},
+		{
+			// The header also appears verbatim inside help/doc strings; those
+			// carry the same date and must collapse to one value, not trip the
+			// multiple-candidates guard.
+			name: "header embedded in surrounding text",
+			hits: []StringHit{
+				{Offset: 100, Value: "oauth-2025-04-203"},
+				{Offset: 200, Value: `-H "anthropic-beta: oauth-2025-04-20" \`},
+			},
+			want: "oauth-2025-04-20",
+		},
+		{
 			name:    "no header",
 			hits:    []StringHit{{Offset: 100, Value: "other"}},
 			wantErr: "no oauth-YYYY-MM-DD",

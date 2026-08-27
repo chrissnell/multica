@@ -28,7 +28,7 @@ type Meta struct {
 
 // Bump on any extraction-semantic change. Lets the watcher diff
 // catch unintended behaviour changes when the tool itself is updated.
-const extractorRev = "2"
+const extractorRev = "3"
 
 func main() {
 	binPath := flag.String("binary", "", "path to claude binary (Mach-O or ELF)")
