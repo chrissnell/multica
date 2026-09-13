@@ -27,6 +27,26 @@ Turn coding agents into real teammates — assign tasks, track progress, compoun
 
 </div>
 
+## About this fork
+
+This is a fork of [`multica-ai/multica`](https://github.com/multica-ai/multica) that runs the agent fleet on **Kubernetes** instead of local daemons. It tracks upstream `main` on a regular cadence (see [`docs/upstream-tracking.md`](docs/upstream-tracking.md)) and adds a self-hosted, cluster-native runtime plus a few UI conveniences. Everything upstream still works — the sections below are what's extra.
+
+### Kubernetes agent runtime (`multica-k8s-controller`)
+
+The headline addition is an in-cluster controller that turns the whole cluster into an agent runtime. It registers as a Multica runtime, claims tasks from the server, and dispatches each one as its own Kubernetes **Job** — one worker pod per task — with per-issue **PersistentVolumeClaims** for workdir reuse. It watches those Jobs to completion, reports failures back to the server, and garbage-collects PVCs once their issue goes terminal. This makes it possible to scale the agent fleet horizontally on your own hardware: assign more work and the cluster schedules more worker pods, with no laptops or long-lived daemons to babysit.
+
+Supporting components complete the runtime:
+
+- **`multica-claude-broker`** — a long-lived Deployment that owns the canonical Anthropic OAuth state (refresh + access tokens) and serves the current access token to worker pods over an internal endpoint. Worker pods never hold the refresh token, so the concurrent-refresh race that can knock out a multi-pod fleet is architecturally impossible.
+- **`multica-repocache`** — an in-cluster repo cache that maintains bare clones of every workspace's repos on a shared volume and mounts them read-only into worker pods. Per-task `git clone` becomes a sub-second local operation, and a workspace-scoped gitconfig rewrite makes it automatic for agents that just clone the origin URL.
+- **`multica-token-sync`** — a small local agent that follows the broker's rotated OAuth state and keeps an operator's macOS Keychain in sync, so the broker can be the single writer without breaking the local `claude` CLI.
+
+Deployment lives under [`deploy/helm`](deploy/helm) (Helm chart) and [`deploy/farm-talos`](deploy/farm-talos), with cluster setup notes in [`cluster/`](cluster).
+
+### Quick actions
+
+Workspace-shared **quick actions** are reusable comment macros surfaced as buttons on the issue detail sidebar. Each is a labeled preset comment body; clicking one posts it on the current issue — which can kick off agent work — so common asks ("review this PR", "deploy to staging", "write tests") become one-click instead of retyped every time. The set is shared across the whole workspace and managed inline from the sidebar.
+
 ## What is Multica?
 
 Multica turns coding agents into real teammates. Assign issues to an agent like you'd assign to a colleague — they'll pick up the work, write code, report blockers, and update statuses autonomously.
