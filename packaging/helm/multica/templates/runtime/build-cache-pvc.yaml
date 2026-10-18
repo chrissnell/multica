@@ -1,0 +1,19 @@
+{{- if and .Values.runtime.enabled (eq .Values.runtime.mode "controller") .Values.runtime.controller.buildCache.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.runtime.controller.buildCache.pvcName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "multica.componentLabels" (dict "name" "build-cache" "ctx" .) | nindent 4 }}
+  annotations:
+    "helm.sh/resource-policy": keep
+spec:
+  accessModes: [{{ .Values.runtime.controller.buildCache.storage.accessMode | quote }}]
+  resources:
+    requests:
+      storage: {{ .Values.runtime.controller.buildCache.storage.size | quote }}
+  {{- with .Values.runtime.controller.buildCache.storage.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}

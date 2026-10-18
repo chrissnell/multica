@@ -72,7 +72,7 @@ func TestCreateJob_AndPayloadConfigMap(t *testing.T) {
 		RuntimeID: "rt-1",
 	}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil)
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil, BuildCacheOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestCreateJob_BrokerMode(t *testing.T) {
 	}
 	cb := ClaudeBrokerOptions{Enabled: true, AccessTokenSecret: "multica-claude-broker-access-token", SecretKey: "access_token"}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", cb, RepoCacheOptions{}, GitHubTokenOptions{}, nil)
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", cb, RepoCacheOptions{}, GitHubTokenOptions{}, nil, BuildCacheOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestDispatchJob_WithGitHubToken(t *testing.T) {
 	}
 	gh := GitHubTokenOptions{SecretName: "multica-github-token", SecretKey: "token"}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, gh, nil)
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, gh, nil, BuildCacheOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestDispatchJob_NoGitHubToken(t *testing.T) {
 		RuntimeID: "rt-1",
 	}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil)
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil, BuildCacheOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestDispatchJob_WithWorkerExtraEnv(t *testing.T) {
 		{Name: "AWS_ACCESS_KEY_ID", SecretName: "multica-cloudflare", SecretKey: "access-key-id"},
 	}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, extraEnv)
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, extraEnv, BuildCacheOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestDispatchJob_PersistsClaudeProjects(t *testing.T) {
 		RuntimeID: "rt-1",
 	}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil)
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil, BuildCacheOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func TestDispatchJob_WithRepoCache(t *testing.T) {
 		MountPath: "/repos",
 	}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, rc, GitHubTokenOptions{}, nil)
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, rc, GitHubTokenOptions{}, nil, BuildCacheOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +510,7 @@ func TestDispatchJob_RepoCacheDisabled(t *testing.T) {
 		Repos:     []daemon.RepoData{{URL: "https://github.com/chrissnell/graywolf.git"}},
 	}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{Enabled: false}, GitHubTokenOptions{}, nil)
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{Enabled: false}, GitHubTokenOptions{}, nil, BuildCacheOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,6 +538,110 @@ func TestDispatchJob_RepoCacheDisabled(t *testing.T) {
 	}
 }
 
+// TestDispatchJob_WithBuildCache asserts that, when BuildCacheOptions.Enabled,
+// DispatchJob mounts the shared build-cache PVC read-write at MountPath and
+// sets the ccache/sccache env vars that make heavy cross-compiles reuse
+// compiled objects across tasks.
+func TestDispatchJob_WithBuildCache(t *testing.T) {
+	k := fake.NewSimpleClientset()
+	r := Registered{
+		WorkspaceID: "ws-bc", AgentName: "Lambda", Provider: "claude",
+		Image:   "registry/multica-runtime-claude:dev",
+		PVCSize: "5Gi",
+	}
+	task := daemon.Task{
+		ID: "task-bc-1", IssueID: "iss-1", AgentID: "ag-1", WorkspaceID: r.WorkspaceID,
+		RuntimeID: "rt-1",
+	}
+	bc := BuildCacheOptions{
+		Enabled:   true,
+		PVCName:   "multica-build-cache",
+		MountPath: "/caches",
+	}
+
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil, bc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := k.BatchV1().Jobs("multica").Get(context.Background(), jobName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Job missing: %v", err)
+	}
+	pod := job.Spec.Template.Spec
+
+	if !hasVolume(pod.Volumes, "build-cache") {
+		t.Fatalf("missing build-cache volume in pod.Volumes")
+	}
+	for _, v := range pod.Volumes {
+		if v.Name == "build-cache" {
+			if v.PersistentVolumeClaim == nil || v.PersistentVolumeClaim.ClaimName != "multica-build-cache" {
+				t.Errorf("build-cache PVC wired wrong: %+v", v.PersistentVolumeClaim)
+			}
+			// Build cache must be writable — workers populate it.
+			if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ReadOnly {
+				t.Errorf("build-cache PVC must be read-write, got ReadOnly")
+			}
+		}
+	}
+
+	runtask := pod.Containers[0]
+	bcMount := hasVolumeMount(runtask.VolumeMounts, "build-cache")
+	if bcMount == nil || bcMount.MountPath != "/caches" || bcMount.ReadOnly {
+		t.Errorf("build-cache mount wrong (want RW at /caches): %+v", bcMount)
+	}
+
+	wantEnv := map[string]string{
+		"CCACHE_DIR":        "/caches/ccache",
+		"IDF_CCACHE_ENABLE": "1",
+		"SCCACHE_DIR":       "/caches/sccache",
+		"RUSTC_WRAPPER":     "sccache",
+		"CARGO_INCREMENTAL": "0",
+	}
+	gotEnv := map[string]string{}
+	for _, e := range runtask.Env {
+		gotEnv[e.Name] = e.Value
+	}
+	for name, want := range wantEnv {
+		if gotEnv[name] != want {
+			t.Errorf("env %s = %q, want %q", name, gotEnv[name], want)
+		}
+	}
+}
+
+// TestDispatchJob_BuildCacheDisabled asserts the default (disabled) path adds
+// no build-cache volume, mount, or cache env vars — a task compiles cold,
+// exactly as before this feature.
+func TestDispatchJob_BuildCacheDisabled(t *testing.T) {
+	k := fake.NewSimpleClientset()
+	r := Registered{
+		WorkspaceID: "ws-bc", AgentName: "Lambda", Provider: "claude",
+		Image:   "registry/multica-runtime-claude:dev",
+		PVCSize: "5Gi",
+	}
+	task := daemon.Task{
+		ID: "task-nobc", IssueID: "iss-1", AgentID: "ag-1", WorkspaceID: r.WorkspaceID,
+		RuntimeID: "rt-1",
+	}
+
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil, BuildCacheOptions{Enabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	job, _ := k.BatchV1().Jobs("multica").Get(context.Background(), jobName, metav1.GetOptions{})
+	pod := job.Spec.Template.Spec
+	if hasVolume(pod.Volumes, "build-cache") {
+		t.Errorf("build-cache volume present despite disabled")
+	}
+	for _, e := range pod.Containers[0].Env {
+		switch e.Name {
+		case "CCACHE_DIR", "IDF_CCACHE_ENABLE", "SCCACHE_DIR", "RUSTC_WRAPPER", "CARGO_INCREMENTAL":
+			t.Errorf("cache env %s leaked despite build cache disabled — RUSTC_WRAPPER=sccache without a cache mount breaks every Rust build", e.Name)
+		}
+	}
+}
+
 // TestDispatchJob_WorkerServiceAccount asserts that Registered.ServiceAccountName
 // (set per-workspace from the chart's runtime.worker.profiles lookup) is
 // propagated to PodSpec.ServiceAccountName. This is what gives the projected
@@ -557,7 +661,7 @@ func TestDispatchJob_WorkerServiceAccount(t *testing.T) {
 		RuntimeID: "rt-1",
 	}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil)
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil, BuildCacheOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -584,7 +688,7 @@ func TestDispatchJob_NoWorkerServiceAccount(t *testing.T) {
 		RuntimeID: "rt-1",
 	}
 
-	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil)
+	jobName, err := DispatchJob(context.Background(), k, "multica", r, task, "ghcr-pull", "pvc-name", ClaudeBrokerOptions{}, RepoCacheOptions{}, GitHubTokenOptions{}, nil, BuildCacheOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -207,6 +207,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# ── sccache (shared Rust compiler cache) ──────────────────────────────────
+# Companion to ccache (installed above): ccache caches the ESP-IDF C framework
+# objects, sccache caches Rust compilation (build-std + crates) when the worker
+# is run with RUSTC_WRAPPER=sccache. Both are content-hash keyed, so a toolchain
+# or IDF bump invalidates them automatically. Only exercised when the controller
+# mounts the shared build-cache PVC and sets the cache env vars (see
+# runtime.controller.buildCache); with no cache mounted, sccache is simply
+# unused. Pinned prebuilt binary (static musl) for a reproducible rebuild.
+ARG SCCACHE_VERSION=0.8.2
+RUN curl -fsSL -o /tmp/sccache.tar.gz \
+       "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+    && tar -xzf /tmp/sccache.tar.gz -C /tmp \
+    && install -m 0755 "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" /usr/local/bin/sccache \
+    && rm -rf /tmp/sccache.tar.gz "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl" \
+    && sccache --version
+
 # ── Protobuf compiler (protoc) ────────────────────────────────────────
 # Upstream release binary + the bundled well-known-type .proto files
 # (google/protobuf/*.proto). Extracting the include/ tree to /usr/local
@@ -410,14 +426,31 @@ ENV HOME=/home/multica \
 # pick it up too.
 #
 # The first RUN (fatal) installs the pinned esp toolchain + ldproxy — the
-# actual blocker, so a failure there fails the image build. The second RUN
-# best-effort pre-warms the ESP-IDF native toolchain (xtensa-esp-elf GCC +
-# tools) from the PUBLIC esp-idf repo at ESP_IDF_VERSION into ~/.espressif,
-# which embuild reuses at runtime. It deliberately does NOT build the firmware
-# repo: that repo is private and unreachable at image-build time (buildkit
-# gets no GH creds). That step is non-fatal — a fetch hiccup must not break the
-# whole runtime image, and the runtime bootstraps IDF on the first firmware
-# build regardless (network is available there).
+# actual blocker, so a failure there fails the image build.
+#
+# The second RUN best-effort pre-warms the whole network-bound side of an
+# ESP-IDF build so no agent task has to pay it. It clones the PUBLIC esp-idf
+# repo at ESP_IDF_VERSION **with all submodules** into a persistent path
+# (kept, not discarded) and runs install.sh to lay down the native toolchain
+# (xtensa-esp-elf GCC + tools + python venv) under ~/.espressif. The submodule
+# clone is the dominant cost measured in GRA-579 (still cloning at 24 min on a
+# cold checkout), so baking it — source tree *and* submodules — is the biggest
+# single win. esp-idf-sys's native builder honours IDF_PATH ("a user-provided
+# local clone of the esp-idf, used instead of the one downloaded by the build
+# script"), so at runtime it reuses this tree and never re-clones. We export
+# IDF_PATH from export-esp.sh (sourced via BASH_ENV into build shells) **only
+# on success** — that keeps the fallback clean: if the pre-warm fails we wipe
+# the half-populated tree AND leave IDF_PATH unset, so esp-idf-sys clones to
+# its own default location on the first build exactly as before. It still
+# does NOT build the firmware repo: that repo is private and unreachable at
+# image-build time (buildkit gets no GH creds). This step is non-fatal — a
+# fetch hiccup must not break the whole runtime image.
+#
+# The third RUN pre-warms the cargo registry with the public esp-idf-* crates
+# and embuild into the shared, baked CARGO_HOME (/usr/local/cargo). The
+# firmware's exact lockfile can't be resolved here (private repo), so we fetch
+# the public crates the firmware depends on; the registry index + crate sources
+# then survive into every runtime build. Non-fatal for the same reason.
 #
 # espup, ldproxy and the esp Rust toolchain are pinned via ARG defaults
 # (overridable with --build-arg) so a runtime rebuild is reproducible.
@@ -426,6 +459,7 @@ ARG LDPROXY_VERSION=0.3.5
 ARG ESP_RUST_VERSION=1.97.0.0
 ARG ESP_TARGET=esp32s3
 ARG ESP_IDF_VERSION=v5.5.3
+ARG ESP_IDF_PATH=/home/multica/.espressif/esp-idf
 ENV ESP_IDF_TOOLS_INSTALL_DIR=global \
     BASH_ENV=/home/multica/export-esp.sh
 RUN cargo install espup --locked --version "${ESPUP_VERSION}" \
@@ -437,10 +471,23 @@ RUN cargo install espup --locked --version "${ESPUP_VERSION}" \
     && printf '\n. "$HOME/export-esp.sh"\n' >> "$HOME/.bashrc" \
     && printf '\n. "$HOME/export-esp.sh"\n' >> "$HOME/.profile"
 RUN ( set -eux; \
-      git clone -b "${ESP_IDF_VERSION}" --depth 1 https://github.com/espressif/esp-idf.git /tmp/esp-idf \
-      && /tmp/esp-idf/install.sh "${ESP_TARGET}" ) \
-      || { echo "WARN: ESP-IDF pre-warm failed; runtime bootstraps IDF on first build" >&2; rm -rf "$HOME/.espressif"; } \
-    && rm -rf /tmp/esp-idf
+      git clone -b "${ESP_IDF_VERSION}" --depth 1 --recurse-submodules --shallow-submodules \
+        https://github.com/espressif/esp-idf.git "${ESP_IDF_PATH}" \
+      && "${ESP_IDF_PATH}/install.sh" "${ESP_TARGET}" \
+      && printf '\nexport IDF_PATH="%s"\n' "${ESP_IDF_PATH}" >> "$HOME/export-esp.sh" ) \
+      || { echo "WARN: ESP-IDF pre-warm failed; runtime bootstraps IDF on first build" >&2; rm -rf "${ESP_IDF_PATH}" "$HOME/.espressif"; }
+# Cargo registry pre-warm: fetch the public esp-idf-* crates + embuild so the
+# registry index and crate sources are baked into the shared CARGO_HOME. Uses a
+# throwaway manifest; `cargo fetch` downloads without compiling (no esp
+# toolchain needed). Non-fatal — a registry blip must not fail the image build.
+RUN ( set -eux; \
+      mkdir -p /tmp/esp-warm/src; \
+      printf 'fn main() {}\n' > /tmp/esp-warm/src/main.rs; \
+      printf '[package]\nname = "esp-warm"\nversion = "0.0.0"\nedition = "2021"\n\n[dependencies]\nesp-idf-svc = "0.51"\nesp-idf-hal = "0.45"\nesp-idf-sys = "0.36"\nembuild = "0.33"\n' \
+        > /tmp/esp-warm/Cargo.toml; \
+      cd /tmp/esp-warm && cargo fetch ) \
+      || echo "WARN: esp crate registry pre-warm failed; runtime fetches crates on first build" >&2 \
+    ; rm -rf /tmp/esp-warm
 
 # Sanity: key tools resolve on PATH for the multica user.
 RUN multica version || true \
@@ -484,4 +531,9 @@ RUN multica version || true \
     && rustup toolchain list | grep -q '^esp' \
     && rustup run esp rustc --version \
     && command -v ldproxy > /dev/null \
-    && command -v xtensa-esp-elf-gcc > /dev/null
+    && command -v xtensa-esp-elf-gcc > /dev/null \
+    && command -v ccache > /dev/null \
+    && command -v sccache > /dev/null \
+    && { test -d "$IDF_PATH/.git" \
+           && echo "ESP-IDF source baked at $IDF_PATH" \
+           || echo "WARN: ESP-IDF source not baked (pre-warm is best-effort; runtime bootstraps it)"; }

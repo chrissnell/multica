@@ -203,6 +203,23 @@ runtime:
     workdir:
       storageClass: ""
       size: 5Gi
+    # ── Shared build cache (compiler-object reuse across tasks) ────────────
+    # An RWX PVC mounted read-write at mountPath on every worker Job pod. It
+    # persists ccache (ESP-IDF C framework) and sccache (Rust build-std +
+    # crates) so heavy cross-compiles — notably ESP32 firmware — don't
+    # recompile from scratch every run. Both caches are content-hash keyed, so
+    # a toolchain or IDF version bump invalidates them automatically. Disabled
+    # by default: enabling it sets RUSTC_WRAPPER=sccache on workers, which only
+    # works with a runtime image that ships sccache — enable it together with
+    # (or after) the matching runtime image, and provide an RWX storage class.
+    buildCache:
+      enabled: false
+      pvcName: multica-build-cache
+      mountPath: /caches
+      storage:
+        storageClass: ""                # MUST be RWX-capable
+        accessMode: ReadWriteMany
+        size: 50Gi
     resources:
       requests: { cpu: 100m, memory: 128Mi }
       limits:   { cpu: 500m, memory: 256Mi }
