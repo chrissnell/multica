@@ -1,13 +1,18 @@
 package service
 
 import (
+	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"mime"
 	"mime/quotedprintable"
 	"net"
+	"net/http"
 	"net/smtp"
 	"os"
 	"strings"
@@ -33,6 +38,56 @@ type EmailService struct {
 	smtpTLSInsecure bool
 	smtpTLSImplicit bool
 	smtpEHLOName    string
+	cf              *cloudflareEmailClient
+	cfFromEmail     string
+}
+
+// cloudflareEmailClient sends transactional email via Cloudflare's Email
+// Sending REST API. We talk to it directly (no SDK) because the surface we
+// need is a single POST. Mirrors the pattern used by chrissnell/skyward.
+type cloudflareEmailClient struct {
+	http      *http.Client
+	accountID string
+	token     string
+}
+
+type cfSendRequest struct {
+	To      string `json:"to"`
+	From    string `json:"from"`
+	Subject string `json:"subject"`
+	HTML    string `json:"html,omitempty"`
+	Text    string `json:"text,omitempty"`
+}
+
+func (c *cloudflareEmailClient) send(ctx context.Context, from, to, subject, htmlBody, textBody string) error {
+	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/email/sending/send", c.accountID)
+	payload, err := json.Marshal(cfSendRequest{
+		To:      to,
+		From:    from,
+		Subject: subject,
+		HTML:    htmlBody,
+		Text:    textBody,
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("cloudflare email HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 type smtpAuthClient interface {
@@ -224,7 +279,21 @@ func NewEmailService() *EmailService {
 		client = resend.NewClient(apiKey)
 	}
 
+	cfAccountID := strings.TrimSpace(os.Getenv("CF_EMAIL_ACCOUNT_ID"))
+	cfToken := strings.TrimSpace(os.Getenv("CF_EMAIL_TOKEN"))
+	cfFrom := strings.TrimSpace(os.Getenv("CF_EMAIL_FROM"))
+	var cf *cloudflareEmailClient
+	if cfAccountID != "" && cfToken != "" && cfFrom != "" {
+		cf = &cloudflareEmailClient{
+			http:      &http.Client{Timeout: 15 * time.Second},
+			accountID: cfAccountID,
+			token:     cfToken,
+		}
+	}
+
 	switch {
+	case cf != nil:
+		fmt.Printf("EmailService: Cloudflare email sending from=%s\n", cfFrom)
 	case smtpHost != "":
 		tlsLabel := "starttls"
 		if smtpTLSImplicit {
@@ -247,6 +316,8 @@ func NewEmailService() *EmailService {
 		smtpTLSInsecure: smtpTLSInsecure,
 		smtpTLSImplicit: smtpTLSImplicit,
 		smtpEHLOName:    smtpEHLOName,
+		cf:              cf,
+		cfFromEmail:     cfFrom,
 	}
 }
 
@@ -346,8 +417,15 @@ func (s *EmailService) SendVerificationCode(to, code string) error {
 			<p style="color: #666; font-size: 14px;">If you didn't request this code, you can safely ignore this email.</p>
 		</div>`, code)
 
+	subject := "Your Multica verification code"
+	if s.cf != nil {
+		textBody := fmt.Sprintf("Your Multica verification code: %s\n\nThis code expires in 10 minutes. If you didn't request it, ignore this email.\n", code)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return s.cf.send(ctx, s.cfFromEmail, to, subject, body, textBody)
+	}
 	if s.smtpHost != "" {
-		return s.sendSMTP(to, "Your Multica verification code", body)
+		return s.sendSMTP(to, subject, body)
 	}
 	if s.client == nil {
 		fmt.Printf("[DEV] Verification code for %s: %s\n", to, code)
@@ -356,7 +434,7 @@ func (s *EmailService) SendVerificationCode(to, code string) error {
 	params := &resend.SendEmailRequest{
 		From:    s.fromEmail,
 		To:      []string{to},
-		Subject: "Your Multica verification code",
+		Subject: subject,
 		Html:    body,
 	}
 	_, err := s.client.Emails.Send(params)
@@ -372,6 +450,13 @@ func (s *EmailService) SendInvitationEmail(to, inviterName, workspaceName, invit
 	}
 	inviteURL := fmt.Sprintf("%s/invite/%s", appURL, invitationID)
 
+	if s.cf != nil {
+		params := buildInvitationParams(s.cfFromEmail, to, inviterName, workspaceName, inviteURL)
+		textBody := fmt.Sprintf("%s invited you to %s on Multica.\n\nAccept the invitation: %s\n\nYou'll need to log in to accept or decline.\n", inviterName, workspaceName, inviteURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return s.cf.send(ctx, s.cfFromEmail, to, params.Subject, params.Html, textBody)
+	}
 	if s.smtpHost != "" {
 		params := buildInvitationParams(s.fromEmail, to, inviterName, workspaceName, inviteURL)
 		return s.sendSMTP(to, params.Subject, params.Html)

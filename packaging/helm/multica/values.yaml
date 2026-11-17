@@ -70,6 +70,15 @@ platform:
     resend:
       apiKeySecretName: ""
       fromEmail: "noreply@multica.ai"
+    # Cloudflare Email Sending. When accountId, fromEmail, and tokenSecretName
+    # are all set, the backend uses Cloudflare's REST API in preference to
+    # SMTP or Resend. The sending domain must be onboarded for Cloudflare
+    # Email Sending before first send.
+    cloudflareEmail:
+      accountId: ""
+      fromEmail: ""
+      tokenSecretName: ""
+      tokenSecretKey: "CF_TOKEN"
     resources:
       requests: { cpu: 200m, memory: 256Mi }
       limits:   { cpu: 1,    memory: 1Gi }
