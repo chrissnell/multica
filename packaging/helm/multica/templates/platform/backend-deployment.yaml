@@ -53,6 +53,13 @@ spec:
                   name: {{ .Values.platform.backend.resend.apiKeySecretName }}
                   key: apiKey
             {{- end }}
+            {{- if .Values.platform.backend.cloudflareEmail.tokenSecretName }}
+            - name: CF_EMAIL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.platform.backend.cloudflareEmail.tokenSecretName }}
+                  key: {{ .Values.platform.backend.cloudflareEmail.tokenSecretKey }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz

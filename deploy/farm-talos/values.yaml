@@ -43,6 +43,15 @@ platform:
     uploads:
       size: 10Gi
       storageClass: synology-nfs-csi
+    # Cloudflare Email Sending (shared sending domain + token with skyward).
+    # Secret `multica-cloudflare` is materialized by an ExternalSecret in
+    # ~/kube/apps/multica/externalsecret-cloudflare.yaml from Vault
+    # secret/cloudflare/email-sending.
+    cloudflareEmail:
+      accountId: "b11de993b9d6cbf02e82dffbec534c31"
+      fromEmail: "multica@family.chrissnell.com"
+      tokenSecretName: multica-cloudflare
+      tokenSecretKey: CF_TOKEN
   web:
     replicaCount: 1
   postgres:
